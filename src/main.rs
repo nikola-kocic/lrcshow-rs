@@ -66,13 +66,55 @@ impl<'a> LrcTimedTextState<'a> {
     }
 }
 
-fn run(player: &str, lrc_filepath: &Path) -> Option<()> {
-    let (tx, rx) = channel();
-    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_millis(100)).unwrap();
-    watcher
-        .watch(lrc_filepath.parent().unwrap(), RecursiveMode::Recursive)
-        .unwrap();
+struct LrcManager {
+    lrc_file: lrc::LrcFile,
+    rx: std::sync::mpsc::Receiver<notify::DebouncedEvent>,
+    _watcher: RecommendedWatcher,
+    lrc_filepath: PathBuf,
+}
 
+impl LrcManager {
+    fn new(lrc_filepath: PathBuf) -> LrcManager {
+        let (tx, rx) = channel();
+        let watcher = create_watcher(tx, lrc_filepath.parent().unwrap());
+        let lrc_file = lrc::parse_lrc_file(&lrc_filepath).unwrap();
+        LrcManager {
+            lrc_file,
+            rx,
+            _watcher: watcher,
+            lrc_filepath,
+        }
+    }
+    fn new_timed_text_state<'a>(&'a self, progress: &Progress) -> LrcTimedTextState<'a> {
+        LrcTimedTextState::new(&self.lrc_file, progress)
+    }
+
+    fn maybe_recreate(&self) -> Option<LrcManager> {
+        if let Ok(x) = self.rx.try_recv() {
+            match x {
+                notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
+                    if path == self.lrc_filepath {
+                        eprintln!("Reloading lyrics");
+                        return Some(LrcManager::new(self.lrc_filepath.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+fn create_watcher(
+    tx: std::sync::mpsc::Sender<notify::DebouncedEvent>,
+    folderpath: &Path,
+) -> RecommendedWatcher {
+    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_millis(100)).unwrap();
+    watcher.watch(folderpath, RecursiveMode::Recursive).unwrap();
+    watcher
+}
+
+fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
     // eprintln!("lrc = {:?}", lrc);
     let c = Connection::get_private(BusType::Session).unwrap();
 
@@ -81,8 +123,8 @@ fn run(player: &str, lrc_filepath: &Path) -> Option<()> {
     let mut progress = player::query_progress(&c, &player_owner_name);
     // eprintln!("progress = {:?}", progress);
 
-    let mut lrc = lrc::parse_lrc_file(lrc_filepath).unwrap();
-    let mut lrc_state = LrcTimedTextState::new(&lrc, &progress);
+    let mut lrc = LrcManager::new(lrc_filepath.clone());
+    let mut lrc_state = lrc.new_timed_text_state(&progress);
 
     for i in c.iter(16) {
         let events = player::create_events(&i, &player_owner_name);
@@ -127,28 +169,13 @@ fn run(player: &str, lrc_filepath: &Path) -> Option<()> {
             // eprintln!("progress = {:?}", progress);
         }
 
-        if let Ok(x) = rx.try_recv() {
-            match x {
-                notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
-                    if path == *lrc_filepath {
-                        eprintln!("Reloading lyrics");
-                        match lrc::parse_lrc_file(lrc_filepath) {
-                            Ok(new_lrc) => {
-                                lrc = new_lrc;
-                                lrc_state = LrcTimedTextState::new(&lrc, &progress);
-                            }
-                            Err(e) => {
-                                eprintln!("Error parsing new file: {}", e);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+        if let Some(new_lrc) = lrc.maybe_recreate() {
+            lrc = new_lrc;
+            lrc_state = lrc.new_timed_text_state(&progress);
         }
 
         if !events.is_empty() {
-            lrc_state = LrcTimedTextState::new(&lrc, &progress);
+            lrc_state = lrc.new_timed_text_state(&progress);
             if let Some(timed_text) = lrc_state.current {
                 println!("{}", timed_text.text);
             }
@@ -163,7 +190,7 @@ fn run(player: &str, lrc_filepath: &Path) -> Option<()> {
 
 fn main() {
     let opt = Opt::from_args();
-    let lyrics_filepath = opt.lyrics.as_path();
+    let lyrics_filepath = opt.lyrics;
     if !lyrics_filepath.is_file() {
         eprintln!("Lyrics path must be a file");
         return;
