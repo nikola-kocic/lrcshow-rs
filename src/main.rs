@@ -66,7 +66,7 @@ impl<'a> LrcTimedTextState<'a> {
     }
 }
 
-fn run(player: &str, lrc_filepath: &Path) {
+fn run(player: &str, lrc_filepath: &Path) -> Option<()> {
     let (tx, rx) = channel();
     let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_millis(100)).unwrap();
     watcher
@@ -76,7 +76,7 @@ fn run(player: &str, lrc_filepath: &Path) {
     // eprintln!("lrc = {:?}", lrc);
     let c = Connection::get_private(BusType::Session).unwrap();
 
-    let player_owner_name = player::subscribe(&c, &player).unwrap();
+    let player_owner_name = player::subscribe(&c, &player)?;
 
     let mut progress = player::query_progress(&c, &player_owner_name);
     // eprintln!("progress = {:?}", progress);
@@ -90,20 +90,37 @@ fn run(player: &str, lrc_filepath: &Path) {
             eprintln!("{:?}", event);
             match event {
                 Event::Seeked { position } => {
-                    progress = Progress::new(progress.playback_status(), *position);
+                    progress =
+                        Progress::new(progress.metadata(), progress.playback_status(), *position);
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Playing) => {
                     // position was already queryied on pause and seek
-                    progress = Progress::new(PlaybackStatus::Playing, progress.position());
-                }
-                Event::PlaybackStatusChange(playback_status) => {
                     progress = Progress::new(
-                        *playback_status,
+                        progress.metadata(),
+                        PlaybackStatus::Playing,
+                        progress.position(),
+                    );
+                }
+                Event::PlaybackStatusChange(PlaybackStatus::Stopped) => {
+                    progress =
+                        Progress::new(None, PlaybackStatus::Stopped, Duration::from_millis(0));
+                }
+                Event::PlaybackStatusChange(PlaybackStatus::Paused) => {
+                    progress = Progress::new(
+                        progress.metadata(),
+                        PlaybackStatus::Paused,
                         player::query_player_position(&c, &player_owner_name),
                     );
                 }
+                Event::MetadataChange(metadata) => {
+                    progress = Progress::new(
+                        Some(metadata.clone()),
+                        progress.playback_status(),
+                        progress.position(),
+                    );
+                }
                 Event::PlayerShutDown => {
-                    return;
+                    return Some(());
                 }
             }
 
@@ -141,6 +158,7 @@ fn run(player: &str, lrc_filepath: &Path) {
             }
         }
     }
+    Some(())
 }
 
 fn main() {
