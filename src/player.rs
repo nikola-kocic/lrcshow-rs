@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use dbus::stdintf::org_freedesktop_dbus::Properties;
@@ -128,32 +129,7 @@ fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, dbus::Error> {
         .collect())
 }
 
-fn get_changed_properties(iter: &mut arg::Iter) -> Vec<(String, MessageItem)> {
-    // let changed_properties1: dbus::MessageItemArray = iter.get()?;
-    let orig_changed_properties = if let MessageItem::Array(a) = iter.get().unwrap() {
-        a
-    } else {
-        panic!("");
-    };
-    let changed_properties = orig_changed_properties.into_vec();
-    // eprintln!("original changed_properties = {:?}", changed_properties);
-    let mut v = Vec::new();
-    for e in changed_properties {
-        let vals = if let MessageItem::DictEntry(box_str, box_var) = e {
-            if let (MessageItem::Str(s), MessageItem::Variant(v)) = (*box_str, *box_var) {
-                (s, *v)
-            } else {
-                panic!("");
-            }
-        } else {
-            panic!("");
-        };
-        v.push(vals);
-    }
-    v
-}
-
-fn get_properties_changed(m: &Message) -> (String, Vec<(String, MessageItem)>, Vec<String>) {
+fn get_properties_changed(m: &Message) -> (String, HashMap<String, arg::Variant<MessageItem>>, Vec<String>) {
     // STRING interface_name,
     // DICT<STRING,VARIANT> changed_properties,
     // ARRAY<STRING> invalidated_properties
@@ -162,7 +138,7 @@ fn get_properties_changed(m: &Message) -> (String, Vec<(String, MessageItem)>, V
     let interface_name: String = iter.get().unwrap();
     // eprintln!("interface_name = {:?}", interface_name);
     iter.next();
-    let changed_properties = get_changed_properties(&mut iter);
+    let changed_properties: HashMap<String, arg::Variant<MessageItem>> = iter.get().unwrap();
     iter.next();
     let invalidated_properties: Vec<String> = iter.get().unwrap();
 
@@ -244,7 +220,7 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
                     for (k, v) in &changed_properties {
                         match k.as_ref() {
                             "PlaybackStatus" => {
-                                let playback_status = if let MessageItem::Str(s) = v {
+                                let playback_status = if let arg::Variant(MessageItem::Str(s)) = v {
                                     s
                                 } else {
                                     panic!("");
