@@ -16,9 +16,10 @@ use std::sync::mpsc::channel;
 #[derive(StructOpt, Debug)]
 #[structopt(name = "lrcshow-rs")]
 struct Opt {
-    /// Lyrics file to use
+    /// Lyrics file to use for all songs.
+    /// By default .lrc file next to audio file, with the same filename, will be used, if available.
     #[structopt(short = "l", long, parse(from_os_str))]
-    lyrics: PathBuf,
+    lyrics: Option<PathBuf>,
 
     /// Player to use
     #[structopt(short = "p", long)]
@@ -85,6 +86,7 @@ impl LrcManager {
             lrc_filepath,
         }
     }
+
     fn new_timed_text_state<'a>(&'a self, progress: &Progress) -> LrcTimedTextState<'a> {
         LrcTimedTextState::new(&self.lrc_file, progress)
     }
@@ -114,7 +116,18 @@ fn create_watcher(
     watcher
 }
 
-fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
+fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
+    if let Some(metadata) = progress.metadata() {
+        let mut audio_filepath = metadata.file_path().clone();
+        audio_filepath.set_extension("lrc");
+        if audio_filepath.is_file() {
+            return Some(audio_filepath);
+        }
+    }
+    None
+}
+
+fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     // eprintln!("lrc = {:?}", lrc);
     let c = Connection::get_private(BusType::Session).unwrap();
 
@@ -123,8 +136,9 @@ fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
     let mut progress = player::query_progress(&c, &player_owner_name);
     // eprintln!("progress = {:?}", progress);
 
-    let mut lrc = LrcManager::new(lrc_filepath.clone());
-    let mut lrc_state = lrc.new_timed_text_state(&progress);
+    let mut lyrics_filepath = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone());
+    let mut lrc = lyrics_filepath.map(LrcManager::new);
+    let mut lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
 
     for i in c.iter(16) {
         let events = player::create_events(&i, &player_owner_name);
@@ -160,6 +174,9 @@ fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
                         progress.playback_status(),
                         progress.position(),
                     );
+                    lyrics_filepath = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone());
+                    lrc = lyrics_filepath.map(LrcManager::new);
+                    lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
                 }
                 Event::PlayerShutDown => {
                     return Some(());
@@ -169,18 +186,20 @@ fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
             // eprintln!("progress = {:?}", progress);
         }
 
-        if let Some(new_lrc) = lrc.maybe_recreate() {
-            lrc = new_lrc;
-            lrc_state = lrc.new_timed_text_state(&progress);
+        if let Some(Some(new_lrc)) = lrc.as_ref().map(|l| l.maybe_recreate()) {
+            lrc = Some(new_lrc);
+            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
         }
 
+        // Print new lyrics line, if needed
         if !events.is_empty() {
-            lrc_state = lrc.new_timed_text_state(&progress);
-            if let Some(timed_text) = lrc_state.current {
+            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+            if let Some(Some(timed_text)) = lrc_state.as_ref().map(|l| l.current) {
                 println!("{}", timed_text.text);
             }
         } else if progress.playback_status() == PlaybackStatus::Playing {
-            if let Some(timed_text) = lrc_state.on_new_progress(&progress) {
+            if let Some(Some(timed_text)) = lrc_state.as_mut().map(|l| l.on_new_progress(&progress))
+            {
                 println!("{}", timed_text.text);
             }
         }
@@ -191,9 +210,9 @@ fn run(player: &str, lrc_filepath: &PathBuf) -> Option<()> {
 fn main() {
     let opt = Opt::from_args();
     let lyrics_filepath = opt.lyrics;
-    if !lyrics_filepath.is_file() {
+    if Some(false) == lyrics_filepath.as_ref().map(|fp| fp.is_file()) {
         eprintln!("Lyrics path must be a file");
         return;
     }
-    run(&opt.player, &lyrics_filepath);
+    run(&opt.player, lyrics_filepath);
 }

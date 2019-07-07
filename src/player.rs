@@ -26,18 +26,26 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    #[allow(dead_code)]
     pub fn album(&self) -> &String {
         &self.album
     }
+
+    #[allow(dead_code)]
     pub fn title(&self) -> &String {
         &self.title
     }
+
+    #[allow(dead_code)]
     pub fn artists(&self) -> &Vec<String> {
         &self.artists
     }
+
     pub fn file_path(&self) -> &PathBuf {
         &self.file_path
     }
+
+    #[allow(dead_code)]
     pub fn length(&self) -> i64 {
         self.length
     }
