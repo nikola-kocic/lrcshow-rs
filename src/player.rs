@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use dbus::stdintf::org_freedesktop_dbus::Properties;
 use dbus::{arg, Connection, ConnectionItem, Message, MessageItem, MessageType};
+use url::Url;
 
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -19,24 +21,24 @@ pub struct Metadata {
     album: String,
     title: String,
     artists: Vec<String>,
-    file_path: String,
+    file_path: PathBuf,
     length: i64,
 }
 
 impl Metadata {
-    fn album(&self) -> &String {
+    pub fn album(&self) -> &String {
         &self.album
     }
-    fn title(&self) -> &String {
+    pub fn title(&self) -> &String {
         &self.title
     }
-    fn artists(&self) -> &Vec<String> {
+    pub fn artists(&self) -> &Vec<String> {
         &self.artists
     }
-    fn file_path(&self) -> &String {
+    pub fn file_path(&self) -> &PathBuf {
         &self.file_path
     }
-    fn length(&self) -> i64 {
+    pub fn length(&self) -> i64 {
         self.length
     }
 }
@@ -127,7 +129,9 @@ fn parse_player_metadata(metadata_map: HashMap<String, arg::Variant<MessageItem>
     // eprintln!("metadata_map = {:?}", metadata_map);
     let album = unchecked_get_string(&metadata_map["xesam:album"]).clone();
     let title = unchecked_get_string(&metadata_map["xesam:title"]).clone();
-    let file_path = unchecked_get_string(&metadata_map["xesam:url"]).clone();
+    let file_path_encoded = unchecked_get_string(&metadata_map["xesam:url"]).clone();
+    let file_path_url = Url::parse(&file_path_encoded).unwrap();
+    let file_path = file_path_url.to_file_path().unwrap();
     let length = if let arg::Variant(MessageItem::Int64(v)) = &metadata_map["mpris:length"] {
         *v
     } else {
