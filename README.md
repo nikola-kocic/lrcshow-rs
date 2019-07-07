@@ -1,5 +1,6 @@
 # lrcshow-rs
 Shows the lyrics of the song. Currently only terminal output is supported.
+If lyrics file is modified, new content will be used.
 
 ## Supported platforms and players
 For now only supported platform is Linux.

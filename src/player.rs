@@ -16,9 +16,7 @@ pub enum PlaybackStatus {
 #[derive(Debug)]
 pub enum Event {
     PlayerShutDown,
-
     PlaybackStatusChange(PlaybackStatus),
-
     Seeked { position: Duration },
 }
 

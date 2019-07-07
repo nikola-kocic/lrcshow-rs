@@ -1,13 +1,16 @@
 mod lrc;
 mod player;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use dbus::{BusType, Connection};
 use structopt::StructOpt;
 
 use crate::player::{Event, PlaybackStatus, Progress};
+
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::sync::mpsc::channel;
 
 /// Show lyrics
 #[derive(StructOpt, Debug)]
@@ -22,8 +25,54 @@ struct Opt {
     player: String,
 }
 
-fn run(player: &str, lrc_filepath: &PathBuf) {
-    let lrc = lrc::parse_lrc_file(lrc_filepath);
+struct LrcTimedTextState<'a> {
+    current: Option<&'a lrc::TimedText>,
+    next: Option<&'a lrc::TimedText>,
+    iter: std::slice::Iter<'a, lrc::TimedText>,
+}
+
+impl<'a> LrcTimedTextState<'a> {
+    fn new(lrc: &'a lrc::LrcFile, progress: &Progress) -> LrcTimedTextState<'a> {
+        let mut iter = lrc.timed_texts.iter();
+        let mut current = iter.next();
+        let mut next = current;
+
+        let v = progress.position() + (Instant::now() - progress.instant());
+
+        while let Some(timed_text) = next {
+            if timed_text.position > v {
+                break;
+            }
+            current = Some(timed_text);
+            next = iter.next();
+        }
+        LrcTimedTextState {
+            current,
+            next,
+            iter,
+        }
+    }
+
+    fn on_new_progress(&mut self, progress: &Progress) -> Option<&'a lrc::TimedText> {
+        if let Some(timed_text) = self.next {
+            let v = progress.position() + (Instant::now() - progress.instant());
+            if v >= timed_text.position {
+                self.current = Some(timed_text);
+                self.next = self.iter.next();
+                return self.current;
+            }
+        }
+        None
+    }
+}
+
+fn run(player: &str, lrc_filepath: &Path) {
+    let (tx, rx) = channel();
+    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_millis(100)).unwrap();
+    watcher
+        .watch(lrc_filepath.parent().unwrap(), RecursiveMode::Recursive)
+        .unwrap();
+
     // eprintln!("lrc = {:?}", lrc);
     let c = Connection::get_private(BusType::Session).unwrap();
 
@@ -32,13 +81,9 @@ fn run(player: &str, lrc_filepath: &PathBuf) {
     let mut progress = player::query_progress(&c, &player_owner_name);
     // eprintln!("progress = {:?}", progress);
 
-    let mut iter_timed_text = lrc.timed_texts.iter();
-    let default_timed_text = lrc::TimedText {
-        position: Duration::from_micros(0),
-        text: String::new(),
-    };
-    let mut current_timed_text; // = &default_timed_text;
-    let mut next_timed_text = iter_timed_text.next();
+    let mut lrc = lrc::parse_lrc_file(lrc_filepath).unwrap();
+    let mut lrc_state = LrcTimedTextState::new(&lrc, &progress);
+
     for i in c.iter(16) {
         let events = player::create_events(&i, &player_owner_name);
         for event in &events {
@@ -65,31 +110,34 @@ fn run(player: &str, lrc_filepath: &PathBuf) {
             // eprintln!("progress = {:?}", progress);
         }
 
-        if !events.is_empty() {
-            iter_timed_text = lrc.timed_texts.iter();
-            let v = progress.position() + (Instant::now() - progress.instant());
-
-            current_timed_text = iter_timed_text.next().unwrap_or(&default_timed_text);
-            next_timed_text = iter_timed_text.next();
-
-            while let Some(timed_text) = next_timed_text {
-                if timed_text.position > v {
-                    break;
+        if let Ok(x) = rx.try_recv() {
+            match x {
+                notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
+                    if path == *lrc_filepath {
+                        eprintln!("Reloading lyrics");
+                        match lrc::parse_lrc_file(lrc_filepath) {
+                            Ok(new_lrc) => {
+                                lrc = new_lrc;
+                                lrc_state = LrcTimedTextState::new(&lrc, &progress);
+                            }
+                            Err(e) => {
+                                eprintln!("Error parsing new file: {}", e);
+                            }
+                        }
+                    }
                 }
-                current_timed_text = timed_text;
-                next_timed_text = iter_timed_text.next();
+                _ => {}
             }
+        }
 
-            println!("{}", current_timed_text.text);
+        if !events.is_empty() {
+            lrc_state = LrcTimedTextState::new(&lrc, &progress);
+            if let Some(timed_text) = lrc_state.current {
+                println!("{}", timed_text.text);
+            }
         } else if progress.playback_status() == PlaybackStatus::Playing {
-            if let Some(timed_text) = next_timed_text {
-                let v = progress.position() + (Instant::now() - progress.instant());
-                if v >= timed_text.position {
-                    current_timed_text = timed_text;
-                    next_timed_text = iter_timed_text.next();
-                    println!("{}", current_timed_text.text);
-                }
-                // eprintln!("at {}", v.as_micros());
+            if let Some(timed_text) = lrc_state.on_new_progress(&progress) {
+                println!("{}", timed_text.text);
             }
         }
     }
@@ -97,5 +145,10 @@ fn run(player: &str, lrc_filepath: &PathBuf) {
 
 fn main() {
     let opt = Opt::from_args();
-    run(&opt.player, &opt.lyrics);
+    let lyrics_filepath = opt.lyrics.as_path();
+    if !lyrics_filepath.is_file() {
+        eprintln!("Lyrics path must be a file");
+        return;
+    }
+    run(&opt.player, &lyrics_filepath);
 }
