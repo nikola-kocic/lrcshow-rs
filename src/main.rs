@@ -35,8 +35,8 @@ struct LrcTimedTextState<'a> {
 impl<'a> LrcTimedTextState<'a> {
     fn new(lrc: &'a lrc::LrcFile, progress: &Progress) -> LrcTimedTextState<'a> {
         let mut iter = lrc.timed_texts.iter();
-        let mut current = iter.next();
-        let mut next = current;
+        let mut current = None;
+        let mut next = iter.next();
 
         let v = progress.position() + (Instant::now() - progress.instant());
 
