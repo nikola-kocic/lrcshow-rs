@@ -14,15 +14,46 @@ pub enum PlaybackStatus {
     Stopped,
 }
 
+#[derive(Clone, Debug)]
+pub struct Metadata {
+    album: String,
+    title: String,
+    artists: Vec<String>,
+    file_path: String,
+    length: i64,
+}
+
+impl Metadata {
+    fn album(&self) -> &String {
+        &self.album
+    }
+    fn title(&self) -> &String {
+        &self.title
+    }
+    fn artists(&self) -> &Vec<String> {
+        &self.artists
+    }
+    fn file_path(&self) -> &String {
+        &self.file_path
+    }
+    fn length(&self) -> i64 {
+        self.length
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
+    MetadataChange(Metadata),
 }
 
 #[derive(Debug)]
 pub struct Progress {
+    /// If player is stopped, metadata will be None
+    metadata: Option<Metadata>,
+
     playback_status: PlaybackStatus,
 
     /// When this Progress was constructed, in order to calculate how old it is.
@@ -33,12 +64,21 @@ pub struct Progress {
 }
 
 impl Progress {
-    pub fn new(playback_status: PlaybackStatus, position: Duration) -> Progress {
+    pub fn new(
+        metadata: Option<Metadata>,
+        playback_status: PlaybackStatus,
+        position: Duration,
+    ) -> Progress {
         Progress {
+            metadata,
             playback_status,
             instant: Instant::now(),
             position,
         }
+    }
+
+    pub fn metadata(&self) -> Option<Metadata> {
+        self.metadata.clone()
     }
 
     pub fn playback_status(&self) -> PlaybackStatus {
@@ -51,6 +91,14 @@ impl Progress {
 
     pub fn position(&self) -> Duration {
         self.position
+    }
+}
+
+fn unchecked_get_string(v: &arg::Variant<MessageItem>) -> &String {
+    if let arg::Variant(MessageItem::Str(s)) = v {
+        s
+    } else {
+        panic!("");
     }
 }
 
@@ -75,11 +123,56 @@ fn query_player_playback_status(c: &Connection, dest: &str) -> PlaybackStatus {
     parse_playback_status(&v)
 }
 
+fn parse_player_metadata(metadata_map: HashMap<String, arg::Variant<MessageItem>>) -> Metadata {
+    // eprintln!("metadata_map = {:?}", metadata_map);
+    let album = unchecked_get_string(&metadata_map["xesam:album"]).clone();
+    let title = unchecked_get_string(&metadata_map["xesam:title"]).clone();
+    let file_path = unchecked_get_string(&metadata_map["xesam:url"]).clone();
+    let length = if let arg::Variant(MessageItem::Int64(v)) = &metadata_map["mpris:length"] {
+        *v
+    } else {
+        panic!("");
+    };
+    let artists: Vec<String> =
+        if let arg::Variant(MessageItem::Array(a)) = &metadata_map["xesam:artist"] {
+            a.iter().map(|e| {
+                if let MessageItem::Str(s) = e {
+                    s.clone()
+                } else {
+                    panic!("");
+                }
+            })
+        } else {
+            panic!("");
+        }
+        .collect();
+
+    Metadata {
+        album,
+        title,
+        artists,
+        file_path,
+        length,
+    }
+}
+
+fn query_player_metadata(c: &Connection, dest: &str) -> Metadata {
+    let metadata_map: HashMap<String, arg::Variant<MessageItem>> =
+        query_player_property(c, dest, "Metadata");
+    parse_player_metadata(metadata_map)
+}
+
 pub fn query_progress(c: &Connection, player_owner_name: &str) -> Progress {
     let playback_status = query_player_playback_status(c, player_owner_name);
     let position = query_player_position(c, player_owner_name);
     let instant = Instant::now();
+    let metadata = if playback_status != PlaybackStatus::Stopped {
+        Some(query_player_metadata(c, player_owner_name))
+    } else {
+        None
+    };
     Progress {
+        metadata,
         playback_status,
         instant,
         position,
@@ -129,7 +222,13 @@ fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, dbus::Error> {
         .collect())
 }
 
-fn get_properties_changed(m: &Message) -> (String, HashMap<String, arg::Variant<MessageItem>>, Vec<String>) {
+fn get_properties_changed(
+    m: &Message,
+) -> (
+    String,
+    HashMap<String, arg::Variant<MessageItem>>,
+    Vec<String>,
+) {
     // STRING interface_name,
     // DICT<STRING,VARIANT> changed_properties,
     // ARRAY<STRING> invalidated_properties
@@ -163,6 +262,22 @@ fn try_parse_name_owner_changed(message: &Message) -> Option<(String, String)> {
         }
         _ => None,
     }
+}
+
+fn get_message_item_dict(a: &dbus::MessageItemArray) -> HashMap<String, arg::Variant<MessageItem>> {
+    a.iter()
+        .map(|e| {
+            if let MessageItem::DictEntry(box_str, box_var) = e.clone() {
+                if let (MessageItem::Str(s), MessageItem::Variant(v)) = (*box_str, *box_var) {
+                    (s, arg::Variant(*v))
+                } else {
+                    panic!("");
+                }
+            } else {
+                panic!("");
+            }
+        })
+        .collect()
 }
 
 pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event> {
@@ -220,14 +335,19 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
                     for (k, v) in &changed_properties {
                         match k.as_ref() {
                             "PlaybackStatus" => {
-                                let playback_status = if let arg::Variant(MessageItem::Str(s)) = v {
-                                    s
-                                } else {
-                                    panic!("");
-                                };
+                                let playback_status = unchecked_get_string(v);
                                 events.push(Event::PlaybackStatusChange(parse_playback_status(
                                     &playback_status,
                                 )));
+                            }
+                            "Metadata" => {
+                                let metadata_map = if let arg::Variant(MessageItem::Array(a)) = v {
+                                    get_message_item_dict(a)
+                                } else {
+                                    panic!("");
+                                };
+                                let metadata = parse_player_metadata(metadata_map);
+                                events.push(Event::MetadataChange(metadata));
                             }
                             _ => {
                                 eprintln!("Unknown PropertiesChanged event:");

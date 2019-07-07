@@ -6,7 +6,7 @@ use std::io::{self, BufRead};
 use std::path::Path;
 use std::str::Chars;
 
-fn lines_from_file<P: AsRef<Path>>(filepath: P)  -> Result<Vec<String>, String> {
+fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
     let file = File::open(filepath).map_err(|e| e.to_string())?;
     Ok(io::BufReader::new(file)
         .lines()
@@ -43,7 +43,9 @@ pub struct LrcFile {
     pub timed_texts: Vec<TimedText>,
 }
 
-fn duration_from_time_string(chars: &mut std::iter::Iterator<Item = char>) -> Result<Duration, String> {
+fn duration_from_time_string(
+    chars: &mut std::iter::Iterator<Item = char>,
+) -> Result<Duration, String> {
     let minutes_str: String = chars.take(2).collect();
     let minutes = u64::from_str_radix(&minutes_str, 10).expect("Bad minutes format");
 
@@ -59,7 +61,9 @@ fn duration_from_time_string(chars: &mut std::iter::Iterator<Item = char>) -> Re
     let centiseconds_str: String = chars.take(2).collect();
     let centiseconds = u64::from_str_radix(&centiseconds_str, 10).expect("Bad centiseconds format");
 
-    Ok(Duration::from_micros(((((minutes * 60) + seconds) * 100) + centiseconds) * 10000))
+    Ok(Duration::from_micros(
+        ((((minutes * 60) + seconds) * 100) + centiseconds) * 10000,
+    ))
 }
 
 fn parse_lrc_line(chars: &mut std::iter::Peekable<Chars>) -> Result<LrcLine, String> {
@@ -80,9 +84,7 @@ fn parse_lrc_line(chars: &mut std::iter::Peekable<Chars>) -> Result<LrcLine, Str
                 Ok(LrcLine::Unknown)
             }
         }
-        _ => {
-            Err(String::from("Invalid lrc file format"))
-        }
+        _ => Err(String::from("Invalid lrc file format")),
     }
 }
 
