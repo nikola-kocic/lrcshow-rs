@@ -199,6 +199,8 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         progress.playback_status(),
                         progress.position(),
                     );
+                    // TODO: Do this only if file changed
+                    on_active_lyrics_line_changed("");
                     lyrics_filepath = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone());
                     lrc = lyrics_filepath.map(LrcManager::new);
                     lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
