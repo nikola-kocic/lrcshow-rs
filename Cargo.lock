@@ -82,6 +82,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "floating-duration"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "fsevent"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -211,6 +216,7 @@ version = "0.2.0"
 dependencies = [
  "dbus 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "floating-duration 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "notify 4.0.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "structopt 0.2.18 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -582,6 +588,7 @@ dependencies = [
 "checksum dbus 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)" = "b9e1b39f3f6aa3d4a1522c4f0f9f1e9e9167bd93740a8690874caa7cf8ce47d7"
 "checksum env_logger 0.6.2 (registry+https://github.com/rust-lang/crates.io-index)" = "aafcde04e90a5226a6443b7aabdb016ba2f8307c847d524724bd9b346dd1a2d3"
 "checksum filetime 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)" = "2f8c63033fcba1f51ef744505b3cad42510432b904c062afa67ad7ece008429d"
+"checksum floating-duration 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "b2c60b71d9dbcd810a3be879dc9aafac6cec5c50dc2346e245f61f54a61fdf22"
 "checksum fsevent 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "5ab7d1bd1bd33cc98b0889831b72da23c0aa4df9cec7e0702f46ecea04b35db6"
 "checksum fsevent-sys 2.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "f41b048a94555da0f42f1d632e2e19510084fb8e303b0daa2816e733fb3644a0"
 "checksum fuchsia-zircon 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "2e9763c69ebaae630ba35f74888db465e49e259ba1bc0eda7d06f4a067615d82"

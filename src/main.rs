@@ -2,16 +2,18 @@ mod lrc;
 mod player;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 use std::sync::mpsc::channel;
+use std::time::{Duration, Instant};
 
 use dbus::{BusType, Connection};
+use floating_duration::TimeAsFloat;
 use log::{debug, error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use structopt::StructOpt;
 
 use crate::player::{Event, PlaybackStatus, Progress};
 
+static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
 /// Show lyrics
 #[derive(StructOpt, Debug)]
@@ -55,13 +57,13 @@ impl<'a> LrcTimedTextState<'a> {
         }
     }
 
-    fn on_new_progress(&mut self, progress: &Progress) -> Option<&'a lrc::TimedText> {
+    fn on_new_progress(&mut self, progress: &Progress) -> Option<(Duration, &'a lrc::TimedText)> {
         if let Some(timed_text) = self.next {
-            let v = progress.position() + (Instant::now() - progress.instant());
-            if v >= timed_text.position {
+            let current_duration = progress.position() + (Instant::now() - progress.instant());
+            if current_duration >= (timed_text.position - (REFRESH_EVERY / 2)) {
                 self.current = Some(timed_text);
                 self.next = self.iter.next();
-                return self.current;
+                return Some((current_duration, self.current.unwrap()));
             }
         }
         None
@@ -119,13 +121,23 @@ fn create_watcher(
 
 fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
     if let Some(metadata) = progress.metadata() {
-        let mut audio_filepath = metadata.file_path().clone();
-        audio_filepath.set_extension("lrc");
-        if audio_filepath.is_file() {
-            return Some(audio_filepath);
+        let mut lrc_filepath = metadata.file_path().clone();
+        lrc_filepath.set_extension("lrc");
+        if lrc_filepath.is_file() {
+            info!("Loading lyrics from {}", lrc_filepath.display());
+            return Some(lrc_filepath);
+        } else {
+            warn!("Lyrics not found for {}", metadata.file_path().display());
         }
     }
     None
+}
+
+fn format_duration(duration: &Duration) -> String {
+    let total_seconds = duration.as_fractional_secs();
+    let minutes = ((total_seconds / 60.0).floor() as i32) % 60;
+    let seconds = total_seconds - f64::from(minutes * 60);
+    format!("{:02}:{:05.2}", minutes, seconds)
 }
 
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
@@ -140,7 +152,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let mut lrc = lyrics_filepath.map(LrcManager::new);
     let mut lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
 
-    for i in c.iter(16) {
+    for i in c.iter(REFRESH_EVERY.as_millis() as i32) {
         let events = player::create_events(&i, &player_owner_name);
         for event in &events {
             debug!("{:?}", event);
@@ -198,8 +210,15 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 println!("{}", timed_text.text);
             }
         } else if progress.playback_status() == PlaybackStatus::Playing {
-            if let Some(timed_text) = lrc_state.as_mut().and_then(|l| l.on_new_progress(&progress))
+            if let Some((duration, timed_text)) = lrc_state
+                .as_mut()
+                .and_then(|l| l.on_new_progress(&progress))
             {
+                debug!(
+                    "Matched lyrics line at time {}, player time {}",
+                    format_duration(&timed_text.position),
+                    format_duration(&duration)
+                );
                 println!("{}", timed_text.text);
             }
         }

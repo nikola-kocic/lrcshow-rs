@@ -367,10 +367,7 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
                                 for p in &changed_properties {
                                     warn!("    changed_property = {:?}", p);
                                 }
-                                warn!(
-                                    "    invalidated_properties = {:?}",
-                                    invalidated_properties
-                                );
+                                warn!("    invalidated_properties = {:?}", invalidated_properties);
                             }
                         }
                     }

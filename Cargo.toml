@@ -7,6 +7,7 @@ edition = "2018"
 [dependencies]
 dbus = "0.6.4"
 env_logger = "0.6.2"
+floating-duration = "0.1.2"
 log = "0.4.6"
 notify = "4.0.12"
 structopt = "0.2.18"
