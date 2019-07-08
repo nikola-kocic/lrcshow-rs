@@ -186,7 +186,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
             // eprintln!("progress = {:?}", progress);
         }
 
-        if let Some(Some(new_lrc)) = lrc.as_ref().map(|l| l.maybe_recreate()) {
+        if let Some(new_lrc) = lrc.as_ref().and_then(|l| l.maybe_recreate()) {
             lrc = Some(new_lrc);
             lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
         }
@@ -194,11 +194,11 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         // Print new lyrics line, if needed
         if !events.is_empty() {
             lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
-            if let Some(Some(timed_text)) = lrc_state.as_ref().map(|l| l.current) {
+            if let Some(timed_text) = lrc_state.as_ref().and_then(|l| l.current) {
                 println!("{}", timed_text.text);
             }
         } else if progress.playback_status() == PlaybackStatus::Playing {
-            if let Some(Some(timed_text)) = lrc_state.as_mut().map(|l| l.on_new_progress(&progress))
+            if let Some(timed_text) = lrc_state.as_mut().and_then(|l| l.on_new_progress(&progress))
             {
                 println!("{}", timed_text.text);
             }
