@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use dbus::{BusType, Connection};
+use dbus::{BusType, Connection, Message};
 use floating_duration::TimeAsFloat;
 use log::{debug, error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -143,6 +143,19 @@ fn format_duration(duration: &Duration) -> String {
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let c = Connection::get_private(BusType::Session).unwrap();
 
+    let on_active_lyrics_line_changed = |text: &str| {
+        let mut s = Message::new_signal(
+            "/com/github/nikola_kocic/lrcshow_rs/Daemon",
+            "com.github.nikola_kocic.lrcshow_rs.Daemon",
+            "ActiveLyricsLineChanged",
+        )
+        .unwrap();
+        s = s.append1(text);
+        c.send(s).unwrap();
+
+        println!("{}", text);
+    };
+
     let player_owner_name = player::subscribe(&c, &player)?;
 
     let mut progress = player::query_progress(&c, &player_owner_name);
@@ -207,19 +220,19 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         if !events.is_empty() {
             lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
             if let Some(timed_text) = lrc_state.as_ref().and_then(|l| l.current) {
-                println!("{}", timed_text.text);
+                on_active_lyrics_line_changed(&timed_text.text);
             }
         } else if progress.playback_status() == PlaybackStatus::Playing {
             if let Some((duration, timed_text)) = lrc_state
                 .as_mut()
                 .and_then(|l| l.on_new_progress(&progress))
             {
+                on_active_lyrics_line_changed(&timed_text.text);
                 debug!(
                     "Matched lyrics line at time {}, player time {}",
                     format_duration(&timed_text.position),
                     format_duration(&duration)
                 );
-                println!("{}", timed_text.text);
             }
         }
     }
