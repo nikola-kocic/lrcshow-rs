@@ -6,6 +6,13 @@ If lyrics file is modified, new content will be used.
 For now only supported platform is Linux.
 All [MPRIS2](https://specifications.freedesktop.org/mpris-spec/latest/) players are supported.
 
+## Integration
+Player communicates via dbus. Object path is `/com/github/nikola_kocic/lrcshow_rs/Daemon` and interface is `com.github.nikola_kocic.lrcshow_rs.Daemon` .
+
+### Signals
+#### ActiveLyricsLineChanged(s)
+&nbsp;&nbsp;&nbsp;&nbsp;When active lyrics line is changed.
+
 ## Installation
 Project builds with the Rust stable version, using the Cargo build system.
 
