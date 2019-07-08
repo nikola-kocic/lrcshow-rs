@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use dbus::stdintf::org_freedesktop_dbus::Properties;
 use dbus::{arg, Connection, ConnectionItem, Message, MessageItem, MessageType};
+use log::{debug, error, info, warn};
 use url::Url;
 
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -134,7 +135,7 @@ fn query_player_playback_status(c: &Connection, dest: &str) -> PlaybackStatus {
 }
 
 fn parse_player_metadata(metadata_map: HashMap<String, arg::Variant<MessageItem>>) -> Metadata {
-    // eprintln!("metadata_map = {:?}", metadata_map);
+    debug!("metadata_map = {:?}", metadata_map);
     let album = unchecked_get_string(&metadata_map["xesam:album"]).clone();
     let title = unchecked_get_string(&metadata_map["xesam:title"]).clone();
     let file_path_encoded = unchecked_get_string(&metadata_map["xesam:url"]).clone();
@@ -247,7 +248,7 @@ fn get_properties_changed(
 
     let mut iter = m.iter_init();
     let interface_name: String = iter.get().unwrap();
-    // eprintln!("interface_name = {:?}", interface_name);
+    debug!("interface_name = {:?}", interface_name);
     iter.next();
     let changed_properties: HashMap<String, arg::Variant<MessageItem>> = iter.get().unwrap();
     iter.next();
@@ -319,9 +320,9 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
         return events;
     }
 
-    // eprintln!("{:?}", m);
+    debug!("{:?}", m);
     // let unique_name = m.sender().map(|bus_name| bus_name.to_string());
-    // eprintln!("Sender: {:?}", unique_name);
+    // debug!("Sender: {:?}", unique_name);
 
     let msg_interface = msg_interface.unwrap();
     let msg_member = msg_member.unwrap();
@@ -340,7 +341,7 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
         }
         "org.freedesktop.DBus.Properties" => {
             if let "PropertiesChanged" = msg_member.as_ref() {
-                // eprintln!("PropertiesChanged");
+                debug!("PropertiesChanged");
                 let (interface_name, changed_properties, invalidated_properties) =
                     get_properties_changed(&m);
                 if interface_name == "org.mpris.MediaPlayer2.Player" {
@@ -362,11 +363,11 @@ pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event>
                                 events.push(Event::MetadataChange(metadata));
                             }
                             _ => {
-                                eprintln!("Unknown PropertiesChanged event:");
+                                warn!("Unknown PropertiesChanged event:");
                                 for p in &changed_properties {
-                                    eprintln!("    changed_property = {:?}", p);
+                                    warn!("    changed_property = {:?}", p);
                                 }
-                                eprintln!(
+                                warn!(
                                     "    invalidated_properties = {:?}",
                                     invalidated_properties
                                 );
@@ -387,13 +388,13 @@ pub fn subscribe(c: &Connection, player: &str) -> Option<String> {
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
     if !all_player_buses.contains(&player_bus) {
-        eprintln!("Player not running");
-        eprintln!("all players = {:?}", all_player_buses);
+        error!("Player not running");
+        info!("all players = {:?}", all_player_buses);
         return None;
     }
 
     let player_owner_name = query_unique_owner_name(&c, player_bus).unwrap();
-    eprintln!("player_owner_name = {:?}", player_owner_name);
+    debug!("player_owner_name = {:?}", player_owner_name);
 
     c.add_match(&format!("interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/mpris/MediaPlayer2',sender='{}'", player_owner_name)).unwrap();
 

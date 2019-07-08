@@ -3,14 +3,15 @@ mod player;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::sync::mpsc::channel;
 
 use dbus::{BusType, Connection};
+use log::{debug, error, info, warn};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use structopt::StructOpt;
 
 use crate::player::{Event, PlaybackStatus, Progress};
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::sync::mpsc::channel;
 
 /// Show lyrics
 #[derive(StructOpt, Debug)]
@@ -96,7 +97,7 @@ impl LrcManager {
             match x {
                 notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
                     if path == self.lrc_filepath {
-                        eprintln!("Reloading lyrics");
+                        info!("Reloading lyrics");
                         return Some(LrcManager::new(self.lrc_filepath.clone()));
                     }
                 }
@@ -128,13 +129,12 @@ fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
 }
 
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
-    // eprintln!("lrc = {:?}", lrc);
     let c = Connection::get_private(BusType::Session).unwrap();
 
     let player_owner_name = player::subscribe(&c, &player)?;
 
     let mut progress = player::query_progress(&c, &player_owner_name);
-    // eprintln!("progress = {:?}", progress);
+    debug!("progress = {:?}", progress);
 
     let mut lyrics_filepath = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone());
     let mut lrc = lyrics_filepath.map(LrcManager::new);
@@ -143,7 +143,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     for i in c.iter(16) {
         let events = player::create_events(&i, &player_owner_name);
         for event in &events {
-            eprintln!("{:?}", event);
+            debug!("{:?}", event);
             match event {
                 Event::Seeked { position } => {
                     progress =
@@ -183,7 +183,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 }
             }
 
-            // eprintln!("progress = {:?}", progress);
+            debug!("progress = {:?}", progress);
         }
 
         if let Some(new_lrc) = lrc.as_ref().and_then(|l| l.maybe_recreate()) {
@@ -208,10 +208,16 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 }
 
 fn main() {
+    env_logger::from_env(env_logger::Env::default().default_filter_or("info"))
+        .write_style(env_logger::WriteStyle::Auto)
+        .default_format_module_path(false)
+        .default_format_timestamp_nanos(true)
+        .init();
+
     let opt = Opt::from_args();
     let lyrics_filepath = opt.lyrics;
     if Some(false) == lyrics_filepath.as_ref().map(|fp| fp.is_file()) {
-        eprintln!("Lyrics path must be a file");
+        error!("Lyrics path must be a file");
         return;
     }
     run(&opt.player, lyrics_filepath);
