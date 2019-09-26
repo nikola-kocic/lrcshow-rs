@@ -6,7 +6,6 @@ use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 use dbus::{BusType, Connection, Message};
-use floating_duration::TimeAsFloat;
 use log::{debug, error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use structopt::StructOpt;
@@ -134,7 +133,7 @@ fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
 }
 
 fn format_duration(duration: &Duration) -> String {
-    let total_seconds = duration.as_fractional_secs();
+    let total_seconds = duration.as_secs_f64();
     let minutes = ((total_seconds / 60.0).floor() as i32) % 60;
     let seconds = total_seconds - f64::from(minutes * 60);
     format!("{:02}:{:05.2}", minutes, seconds)

@@ -44,7 +44,7 @@ pub struct LrcFile {
 }
 
 fn duration_from_time_string(
-    chars: &mut std::iter::Iterator<Item = char>,
+    chars: &mut dyn std::iter::Iterator<Item = char>,
 ) -> Result<Duration, String> {
     let minutes_str: String = chars.take(2).collect();
     let minutes = u64::from_str_radix(&minutes_str, 10).expect("Bad minutes format");
