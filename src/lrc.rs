@@ -58,13 +58,14 @@ fn duration_from_time_string(
     let minutes = u64::from_str_radix(&minutes_str, 10).expect("Bad minutes format");
 
     if chars.next() != Some(':') {
-        return Err(String::from("Bad time format"));
+        return Err(String::from("Bad seconds divider"));
     }
     let seconds_str: String = chars.take(2).collect();
     let seconds = u64::from_str_radix(&seconds_str, 10).expect("Bad seconds format");
 
-    if chars.next() != Some('.') {
-        return Err(String::from("Bad time format"));
+    let ms_divider_char = chars.next();
+    if ms_divider_char != Some('.') && ms_divider_char != Some(':') {
+        return Err(String::from("Bad milliseconds divider"));
     }
     let centiseconds_str: String = chars.take(2).collect();
     let centiseconds = u64::from_str_radix(&centiseconds_str, 10).expect("Bad centiseconds format");
