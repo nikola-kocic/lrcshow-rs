@@ -14,20 +14,28 @@ fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
         .collect())
 }
 
-pub struct TimedText {
-    pub position: Duration,
-    pub text: String,
+pub struct TimedLocation {
+    pub time: Duration,
+    pub line_char_from_index: i32, // from this character in line
+    pub line_char_to_index: i32,   // to this character in line
 }
 
-impl fmt::Debug for TimedText {
+impl fmt::Debug for TimedLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "TimedText {{ position: {}, text: {} }}",
-            self.position.as_micros(),
-            self.text
+            "TimedLocation {{ time: {}, from: {}, to: {} }}",
+            self.time.as_micros(),
+            self.line_char_from_index,
+            self.line_char_to_index,
         )
     }
+}
+
+#[derive(Debug)]
+pub struct TimedText {
+    pub text: String,
+    pub timings: Vec<TimedLocation>,
 }
 
 #[derive(Debug)]
@@ -40,7 +48,7 @@ enum LrcLine {
 #[derive(Debug)]
 pub struct LrcFile {
     metadata: Vec<(String, String)>,
-    pub timed_texts: Vec<TimedText>,
+    pub timed_texts_lines: Vec<TimedText>,
 }
 
 fn duration_from_time_string(
@@ -72,14 +80,20 @@ fn parse_lrc_line(chars: &mut std::iter::Peekable<Chars>) -> Result<LrcLine, Str
         Some('[') => {
             let first_char_in_tag_name = chars.peek().expect("Invalid lrc file format");
             if first_char_in_tag_name.is_ascii_digit() {
-                let position = duration_from_time_string(&mut chars.take_while(|c| *c != ']'))?;
+                let time = duration_from_time_string(&mut chars.take_while(|c| *c != ']'))?;
                 if chars.next() != Some(']') {
                     return Err(String::from("Invalid lrc file format"));
                 }
-                Ok(LrcLine::TimedText(TimedText {
-                    position,
-                    text: chars.collect(),
-                }))
+                let text: String = chars.collect();
+                let text_len = text.chars().count() as i32;
+                let mut timings = Vec::new();
+                let location = TimedLocation {
+                    time,
+                    line_char_from_index: 0,
+                    line_char_to_index: text_len,
+                };
+                timings.push(location);
+                Ok(LrcLine::TimedText(TimedText { text, timings }))
             } else {
                 Ok(LrcLine::Unknown)
             }
@@ -90,16 +104,16 @@ fn parse_lrc_line(chars: &mut std::iter::Peekable<Chars>) -> Result<LrcLine, Str
 
 pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
     let text_lines = lines_from_file(filepath)?;
-    let mut timed_texts = Vec::new();
+    let mut timed_texts_lines = Vec::new();
     for line in text_lines {
         let mut chars = line.chars().peekable();
         let lrc_line = parse_lrc_line(&mut chars)?;
         if let LrcLine::TimedText(t) = lrc_line {
-            timed_texts.push(t);
+            timed_texts_lines.push(t);
         }
     }
     Ok(LrcFile {
         metadata: Vec::new(),
-        timed_texts,
+        timed_texts_lines,
     })
 }
