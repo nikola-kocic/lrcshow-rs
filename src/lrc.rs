@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-use log::debug;
+use log::{debug, info};
 
 fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
     let file = File::open(filepath).map_err(|e| e.to_string())?;
@@ -41,10 +41,17 @@ pub struct TimedText {
 }
 
 #[derive(Debug)]
+enum Tag {
+    Time(std::time::Duration),
+    Offset(i64), // ms
+    Unknown,
+}
+
+#[derive(Debug)]
 enum LrcLine {
     Empty,
-    Unknown,
     TimedText(TimedText),
+    Tag(Tag),
 }
 
 #[derive(Debug)]
@@ -75,11 +82,6 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     ))
 }
 
-enum Tag {
-    Time(std::time::Duration),
-    Unknown,
-}
-
 fn parse_tag(tag_content: &str) -> Result<Tag, String> {
     debug!("Parsing tag content {}", tag_content);
     let first_char_in_tag_name = tag_content.chars().next().expect("Invalid lrc file format");
@@ -87,7 +89,16 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
         let time = duration_from_time_string(tag_content)?;
         Ok(Tag::Time(time))
     } else {
-        Ok(Tag::Unknown)
+        let mut parts = tag_content.split(':');
+        let tag_first_part = parts.next().unwrap();
+        match tag_first_part {
+            "offset" => {
+                let offset_val_str = parts.next().unwrap();
+                let offset = i64::from_str_radix(&offset_val_str, 10).expect("Bad offset format");
+                Ok(Tag::Offset(offset))
+            }
+            _ => Ok(Tag::Unknown),
+        }
     }
 }
 
@@ -120,9 +131,7 @@ fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
                         timings.push(location);
                         current_text_index_in_line += text_len;
                     }
-                    Tag::Unknown => {
-                        return Ok(LrcLine::Unknown);
-                    }
+                    tag => return Ok(LrcLine::Tag(tag)),
                 }
             }
             let text = texts.join("");
@@ -138,10 +147,22 @@ fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
 pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
     let text_lines = lines_from_file(filepath)?;
     let mut timed_texts_lines = Vec::new();
+    let mut offset_ms = 0i64;
     for line in text_lines {
-        let lrc_line = parse_lrc_line(line)?;
-        if let LrcLine::TimedText(t) = lrc_line {
-            timed_texts_lines.push(t);
+        match parse_lrc_line(line)? {
+            LrcLine::TimedText(mut t) => {
+                if offset_ms != 0 {
+                    for timing in &mut t.timings {
+                        info!("Adjusting with offset {}", offset_ms);
+                        let prev_time_ms: i64 = timing.time.as_millis().try_into().unwrap();
+                        timing.time =
+                            Duration::from_millis((prev_time_ms + offset_ms).try_into().unwrap());
+                    }
+                }
+                timed_texts_lines.push(t);
+            }
+            LrcLine::Tag(Tag::Offset(v)) => offset_ms = v,
+            _ => {}
         }
     }
     Ok(LrcFile {
