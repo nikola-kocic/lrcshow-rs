@@ -320,11 +320,15 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         },
                         &c,
                     );
-                    if let Some(filepath) =
-                        get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone())
-                    {
-                        lrc = Some(LrcManager::new(filepath));
-                        lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+                    match get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
+                        Some(filepath) => {
+                            lrc = Some(LrcManager::new(filepath));
+                            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+                        }
+                        None => {
+                            lrc = None;
+                            lrc_state = None;
+                        }
                     }
                     {
                         let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
