@@ -5,13 +5,13 @@ authors = ["Nikola Kocić <nikolakocic@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-dbus = "0.6.4"
+dbus = "0.7.1"
 log = "0.4.6"
 notify = "4.0.12"
-structopt = "0.2.18"
-url = "1.7.2"
+structopt = "0.3.2"
+url = "2.1.0"
 
 [dependencies.env_logger]
-version = "0.6.2"
+version = "0.7.0"
 default-features = false
 features = ["termcolor", "atty", "humantime"]
