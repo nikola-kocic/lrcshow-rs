@@ -116,6 +116,7 @@ impl LrcManager {
         let (tx, rx) = channel();
         let watcher = create_watcher(tx, lrc_filepath.parent().unwrap());
         let lrc_file = lrc::parse_lrc_file(&lrc_filepath).unwrap();
+        debug!("lrc_file = {:?}", lrc_file);
         let lyrics = Lyrics::new(lrc_file);
         LrcManager {
             lyrics,
