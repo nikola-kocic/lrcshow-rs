@@ -1,14 +1,21 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use dbus::stdintf::org_freedesktop_dbus::Properties;
-use dbus::{arg, Connection, ConnectionItem, Message, MessageItem, MessageType};
+use dbus::arg::RefArg;
+use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+use dbus::blocking::BlockingSender;
+use dbus::blocking::{Connection, Proxy};
+use dbus::{arg, Message};
 use log::{debug, error, info, warn};
 use url::Url;
 
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
+
+type DbusStringMap = HashMap<String, arg::Variant<Box<dyn arg::RefArg>>>;
+pub type ConnectionProxy<'a> = Proxy<'a, &'a Connection>;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum PlaybackStatus {
@@ -105,59 +112,46 @@ impl Progress {
     }
 }
 
-fn unchecked_get_string(v: &arg::Variant<MessageItem>) -> &String {
-    if let arg::Variant(MessageItem::Str(s)) = v {
-        s
-    } else {
-        panic!("");
-    }
-}
-
-fn query_player_property<T>(c: &Connection, dest: &str, name: &str) -> T
+fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> T
 where
     for<'b> T: dbus::arg::Get<'b>,
 {
-    let p = c.with_path(dest, MPRIS2_PATH, 5000);
     p.get("org.mpris.MediaPlayer2.Player", name).unwrap()
 }
 
-pub fn query_player_position(c: &Connection, dest: &str) -> Duration {
-    let v: i64 = query_player_property(c, dest, "Position");
+pub fn query_player_position(p: &ConnectionProxy) -> Duration {
+    let v: i64 = query_player_property(p, "Position");
     if v < 0 {
         panic!("Wrong position value");
     }
     Duration::from_micros(v as u64)
 }
 
-fn query_player_playback_status(c: &Connection, dest: &str) -> PlaybackStatus {
-    let v: String = query_player_property(c, dest, "PlaybackStatus");
+fn query_player_playback_status(p: &ConnectionProxy) -> PlaybackStatus {
+    let v: String = query_player_property(p, "PlaybackStatus");
     parse_playback_status(&v)
 }
 
-fn parse_player_metadata(metadata_map: HashMap<String, arg::Variant<MessageItem>>) -> Metadata {
+fn parse_player_metadata<T: arg::RefArg>(metadata_map: HashMap<String, T>) -> Metadata {
     debug!("metadata_map = {:?}", metadata_map);
-    let album = unchecked_get_string(&metadata_map["xesam:album"]).clone();
-    let title = unchecked_get_string(&metadata_map["xesam:title"]).clone();
-    let file_path_encoded = unchecked_get_string(&metadata_map["xesam:url"]).clone();
+    let album = metadata_map["xesam:album"].as_str().unwrap().to_string();
+    let title = metadata_map["xesam:title"].as_str().unwrap().to_string();
+    let file_path_encoded = metadata_map["xesam:url"].as_str().unwrap().to_string();
     let file_path_url = Url::parse(&file_path_encoded).unwrap();
     let file_path = file_path_url.to_file_path().unwrap();
-    let length = if let arg::Variant(MessageItem::Int64(v)) = &metadata_map["mpris:length"] {
-        *v
-    } else {
-        panic!("");
-    };
-    let artists: Vec<String> =
-        if let arg::Variant(MessageItem::Array(a)) = &metadata_map["xesam:artist"] {
-            a.iter().map(|e| {
-                if let MessageItem::Str(s) = e {
-                    s.clone()
-                } else {
-                    panic!("");
-                }
-            })
-        } else {
-            panic!("");
-        }
+    let length = metadata_map["mpris:length"].as_i64().unwrap();
+    let artists: Vec<String> = metadata_map["xesam:artist"]
+        .as_iter()
+        .unwrap()
+        .map(|e| {
+            if let Some(s) = e.as_str() {
+                s.to_string()
+            } else if let Some(mut i) = e.as_iter() {
+                i.next().unwrap().as_str().unwrap().to_string()
+            } else {
+                panic!("")
+            }
+        })
         .collect();
 
     Metadata {
@@ -169,18 +163,17 @@ fn parse_player_metadata(metadata_map: HashMap<String, arg::Variant<MessageItem>
     }
 }
 
-fn query_player_metadata(c: &Connection, dest: &str) -> Metadata {
-    let metadata_map: HashMap<String, arg::Variant<MessageItem>> =
-        query_player_property(c, dest, "Metadata");
+fn query_player_metadata(p: &ConnectionProxy) -> Metadata {
+    let metadata_map: DbusStringMap = query_player_property(p, "Metadata");
     parse_player_metadata(metadata_map)
 }
 
-pub fn query_progress(c: &Connection, player_owner_name: &str) -> Progress {
-    let playback_status = query_player_playback_status(c, player_owner_name);
-    let position = query_player_position(c, player_owner_name);
+pub fn query_progress(p: &ConnectionProxy) -> Progress {
+    let playback_status = query_player_playback_status(p);
+    let position = query_player_position(p);
     let instant = Instant::now();
     let metadata = if playback_status != PlaybackStatus::Stopped {
-        Some(query_player_metadata(c, player_owner_name))
+        Some(query_player_metadata(p))
     } else {
         None
     };
@@ -211,7 +204,7 @@ fn query_unique_owner_name<S: Into<String>>(c: &Connection, bus_name: S) -> Opti
     .unwrap()
     .append1(bus_name.into());
 
-    c.send_with_reply_and_block(get_name_owner, 100)
+    c.send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
         .ok()
         .and_then(|reply| reply.get1())
 }
@@ -225,7 +218,7 @@ fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, dbus::Error> {
     )
     .unwrap();
 
-    let reply = c.send_with_reply_and_block(list_names, 500)?;
+    let reply = c.send_with_reply_and_block(list_names, Duration::from_millis(500))?;
 
     let names: arg::Array<&str, _> = reply.read1()?;
 
@@ -235,152 +228,163 @@ fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, dbus::Error> {
         .collect())
 }
 
-fn get_properties_changed(
-    m: &Message,
-) -> (
-    String,
-    HashMap<String, arg::Variant<MessageItem>>,
-    Vec<String>,
-) {
-    // STRING interface_name,
-    // DICT<STRING,VARIANT> changed_properties,
-    // ARRAY<STRING> invalidated_properties
-
-    let mut iter = m.iter_init();
-    let interface_name: String = iter.get().unwrap();
-    debug!("interface_name = {:?}", interface_name);
-    iter.next();
-    let changed_properties: HashMap<String, arg::Variant<MessageItem>> = iter.get().unwrap();
-    iter.next();
-    let invalidated_properties: Vec<String> = iter.get().unwrap();
-
-    (interface_name, changed_properties, invalidated_properties)
-}
-
-fn try_parse_name_owner_changed(message: &Message) -> Option<(String, String)> {
-    match (message.sender(), message.member()) {
-        (Some(ref sender), Some(ref member))
-            if &**sender == "org.freedesktop.DBus" && &**member == "NameOwnerChanged" =>
-        {
-            let mut iter = message.iter_init();
-            let name: String = iter.read().ok()?;
-
-            if !name.starts_with("org.mpris.") {
-                None
-            } else {
-                let old_owner: String = iter.read().ok()?;
-                let new_owner: String = iter.read().ok()?;
-                Some((new_owner, old_owner))
-            }
-        }
-        _ => None,
-    }
-}
-
-fn get_message_item_dict(a: &dbus::MessageItemArray) -> HashMap<String, arg::Variant<MessageItem>> {
-    a.iter()
-        .map(|e| {
-            if let MessageItem::DictEntry(box_str, box_var) = e.clone() {
-                if let (MessageItem::Str(s), MessageItem::Variant(v)) = (*box_str, *box_var) {
-                    (s, arg::Variant(*v))
-                } else {
-                    panic!("");
-                }
-            } else {
-                panic!("");
-            }
+fn get_message_item_dict(
+    a: &arg::Variant<Box<dyn arg::RefArg>>,
+) -> HashMap<String, Box<&dyn arg::RefArg>> {
+    let mut it = a.as_iter().unwrap();
+    let d_variant = it.next().unwrap();
+    let d_it = d_variant.as_iter().unwrap();
+    let v = d_it.collect::<Vec<_>>();
+    v.chunks(2)
+        .map(|c| {
+            let key = c[0].as_str().unwrap();
+            (key.to_string(), Box::new(c[1]))
         })
         .collect()
 }
 
-pub fn create_events(ci: &ConnectionItem, player_owner_name: &str) -> Vec<Event> {
-    let mut events = Vec::new();
+#[derive(Debug)]
+pub struct DbusPropertiesChangedHappened {
+    pub interface_name: String,
+    pub changed_properties: DbusStringMap,
+    pub invalidated_properties: Vec<String>,
+}
 
-    let m = if let ConnectionItem::Signal(ref s) = *ci {
-        s
-    } else {
-        return events;
-    };
+impl dbus::message::SignalArgs for DbusPropertiesChangedHappened {
+    const NAME: &'static str = "PropertiesChanged";
+    const INTERFACE: &'static str = "org.freedesktop.DBus.Properties";
+}
 
-    if let Some((new_owner, old_owner)) = try_parse_name_owner_changed(m) {
-        if new_owner.is_empty() && old_owner == player_owner_name {
-            events.push(Event::PlayerShutDown);
-            return events;
-        }
+impl arg::ReadAll for DbusPropertiesChangedHappened {
+    fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
+        Ok(Self {
+            interface_name: i.read().unwrap(),
+            changed_properties: i.read().unwrap(),
+            invalidated_properties: i.read().unwrap(),
+        })
     }
+}
 
-    let (msg_type, msg_path, msg_interface, msg_member) = m.headers();
-    if msg_type != MessageType::Signal {
-        return events;
-    };
+#[derive(Debug)]
+pub struct MediaPlayer2SeekedHappened {
+    pub position_us: i64,
+}
 
-    let msg_path = msg_path.unwrap();
+impl dbus::message::SignalArgs for MediaPlayer2SeekedHappened {
+    const NAME: &'static str = "Seeked";
+    const INTERFACE: &'static str = "org.mpris.MediaPlayer2.Player";
+}
 
-    if msg_path != MPRIS2_PATH {
-        return events;
+impl arg::ReadAll for MediaPlayer2SeekedHappened {
+    fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
+        Ok(Self {
+            position_us: i.read().unwrap(),
+        })
     }
+}
 
-    debug!("{:?}", m);
-    // let unique_name = m.sender().map(|bus_name| bus_name.to_string());
-    // debug!("Sender: {:?}", unique_name);
+#[derive(Debug)]
+pub struct DbusNameOwnedChanged {
+    pub name: String,
+    pub new_owner: String,
+    pub old_owner: String,
+}
 
-    let msg_interface = msg_interface.unwrap();
-    let msg_member = msg_member.unwrap();
+impl dbus::message::SignalArgs for DbusNameOwnedChanged {
+    const NAME: &'static str = "NameOwnerChanged";
+    const INTERFACE: &'static str = "org.freedesktop.DBus";
+}
 
-    match msg_interface.as_ref() {
-        "org.mpris.MediaPlayer2.Player" => {
-            if let "Seeked" = msg_member.as_ref() {
-                let v = m.get1::<i64>().unwrap();
-                if v < 0 {
-                    panic!("");
-                }
-                events.push(Event::Seeked {
-                    position: Duration::from_micros(v as u64),
-                });
-            }
+impl arg::ReadAll for DbusNameOwnedChanged {
+    fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
+        Ok(Self {
+            name: i.read().unwrap(),
+            new_owner: i.read().unwrap(),
+            old_owner: i.read().unwrap(),
+        })
+    }
+}
+
+pub fn get_connection_proxy<'a>(
+    c: &'a Connection,
+    player_owner_name: &'a str,
+) -> ConnectionProxy<'a> {
+    c.with_proxy(player_owner_name, MPRIS2_PATH, Duration::from_millis(5000))
+}
+
+fn get_mediaplayer2_seeked_handler(
+    sender: Sender<Event>,
+) -> impl Fn(MediaPlayer2SeekedHappened, &Connection) -> bool {
+    move |e: MediaPlayer2SeekedHappened, _: &Connection| {
+        debug!("Seek happened: {:?}", e);
+        if e.position_us < 0 {
+            panic!(
+                "Position value must be positive number, found {}",
+                e.position_us
+            );
         }
-        "org.freedesktop.DBus.Properties" => {
-            if let "PropertiesChanged" = msg_member.as_ref() {
-                debug!("PropertiesChanged");
-                let (interface_name, changed_properties, invalidated_properties) =
-                    get_properties_changed(&m);
-                if interface_name == "org.mpris.MediaPlayer2.Player" {
-                    for (k, v) in &changed_properties {
-                        match k.as_ref() {
-                            "PlaybackStatus" => {
-                                let playback_status = unchecked_get_string(v);
-                                events.push(Event::PlaybackStatusChange(parse_playback_status(
-                                    &playback_status,
-                                )));
-                            }
-                            "Metadata" => {
-                                let metadata_map = if let arg::Variant(MessageItem::Array(a)) = v {
-                                    get_message_item_dict(a)
-                                } else {
-                                    panic!("");
-                                };
-                                let metadata = parse_player_metadata(metadata_map);
-                                events.push(Event::MetadataChange(metadata));
-                            }
-                            _ => {
-                                warn!("Unknown PropertiesChanged event:");
-                                for p in &changed_properties {
-                                    warn!("    changed_property = {:?}", p);
-                                }
-                                warn!("    invalidated_properties = {:?}", invalidated_properties);
-                            }
+        sender
+            .send(Event::Seeked {
+                position: Duration::from_micros(e.position_us as u64),
+            })
+            .unwrap();
+        true
+    }
+}
+
+fn get_dbus_properties_changed_handler(
+    sender: Sender<Event>,
+) -> impl Fn(DbusPropertiesChangedHappened, &Connection) -> bool {
+    move |e: DbusPropertiesChangedHappened, _: &Connection| {
+        debug!("DBus.Properties happened: {:?}", e);
+        if e.interface_name == "org.mpris.MediaPlayer2.Player" {
+            for (k, v) in &e.changed_properties {
+                match k.as_ref() {
+                    "PlaybackStatus" => {
+                        let playback_status = v.as_str().unwrap();
+                        sender
+                            .send(Event::PlaybackStatusChange(parse_playback_status(
+                                &playback_status,
+                            )))
+                            .unwrap();
+                    }
+                    "Metadata" => {
+                        let metadata_map = get_message_item_dict(v);
+                        let metadata = parse_player_metadata(metadata_map);
+                        sender.send(Event::MetadataChange(metadata)).unwrap();
+                    }
+                    _ => {
+                        warn!("Unknown PropertiesChanged event:");
+                        for p in &e.changed_properties {
+                            warn!("    changed_property = {:?}", p);
                         }
+                        warn!(
+                            "    invalidated_properties = {:?}",
+                            e.invalidated_properties
+                        );
                     }
                 }
             }
         }
-        _ => {}
+        true
     }
-
-    events
 }
 
-pub fn subscribe(c: &Connection, player: &str) -> Option<String> {
+fn get_dbus_name_owned_changed_handler(
+    sender: Sender<Event>,
+    player_owner_name: String,
+) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
+    move |e: DbusNameOwnedChanged, _: &Connection| {
+        debug!("DbusNameOwnedChanged happened: {:?}", e);
+        if e.name == player_owner_name && e.old_owner.is_empty() && e.new_owner == player_owner_name
+        {
+            sender.send(Event::PlayerShutDown).unwrap();
+        }
+        true
+    }
+}
+
+pub fn subscribe<'a>(c: &'a Connection, player: &str, sender: &Sender<Event>) -> Option<String> {
     let all_player_buses = query_all_player_buses(&c).unwrap();
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
@@ -393,19 +397,29 @@ pub fn subscribe(c: &Connection, player: &str) -> Option<String> {
     let player_owner_name = query_unique_owner_name(&c, player_bus).unwrap();
     debug!("player_owner_name = {:?}", player_owner_name);
 
-    c.add_match(&format!("interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/mpris/MediaPlayer2',sender='{}'", player_owner_name)).unwrap();
+    let p = get_connection_proxy(c, &player_owner_name);
 
-    c.add_match(
-        &format!("interface='org.mpris.MediaPlayer2.Player',member='Seeked',path='/org/mpris/MediaPlayer2',sender='{}'", player_owner_name)
-    )
-    .unwrap();
+    p.match_signal(get_dbus_properties_changed_handler(sender.clone()))
+        .unwrap();
 
-    c.add_match(&format!(
-        "interface='org.mpris.MediaPlayer2.TrackList',path='/org/mpris/MediaPlayer2',sender='{}'",
-        player_owner_name
-    ))
-    .unwrap();
+    p.match_signal(get_mediaplayer2_seeked_handler(sender.clone()))
+        .unwrap();
 
-    c.add_match("type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'").unwrap();
+    // p.match_signal(|_: MediaPlayer2TrackListChangeHappened, _: &Connection| {
+    //     debug!("TrackList happened");
+    //     true
+    // }).unwrap();
+
+    let proxy_generic_dbus = c.with_proxy(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        Duration::from_millis(5000),
+    );
+    proxy_generic_dbus
+        .match_signal(get_dbus_name_owned_changed_handler(
+            sender.clone(),
+            player_owner_name.clone(),
+        ))
+        .unwrap();
     Some(player_owner_name)
 }
