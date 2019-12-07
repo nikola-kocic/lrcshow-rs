@@ -310,16 +310,6 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         progress.playback_status(),
                         progress.position(),
                     );
-                    // TODO: Do this only if file changed
-                    on_active_lyrics_segment_changed(
-                        &LyricsTiming {
-                            time: Duration::from_secs(0),
-                            line_index: 0,
-                            line_char_from_index: 0,
-                            line_char_to_index: 0,
-                        },
-                        &c,
-                    );
                     match get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
                         Some(filepath) => {
                             lrc = Some(LrcManager::new(filepath));
@@ -337,6 +327,16 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                             .map(|l| l.lyrics.lines.clone())
                             .unwrap_or_else(Vec::new);
                         on_lyrics_changed(&c);
+
+                        on_active_lyrics_segment_changed(
+                            &LyricsTiming {
+                                time: Duration::from_secs(0),
+                                line_index: 0,
+                                line_char_from_index: 0,
+                                line_char_to_index: 0,
+                            },
+                            &c,
+                        );
                     }
                 }
                 Event::PlayerShutDown => {
