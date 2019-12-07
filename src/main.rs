@@ -198,7 +198,7 @@ fn run_dbus_server(active_lyrics_lines: Arc<Mutex<Vec<String>>>) -> Result<(), d
                     .add_m(
                         f.method("GetCurrentLyrics", (), move |m| {
                             let v = active_lyrics_lines.lock().unwrap().clone();
-                            println!("Hello called");
+                            debug!("GetCurrentLyrics called");
                             Ok(vec![m.msg.method_return().append1(v)])
                         })
                         .outarg::<Vec<&str>, _>("reply"),
@@ -235,7 +235,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         use dbus::channel::Sender;
         c.send(s).unwrap();
 
-        println!(
+        info!(
             "ActiveLyricsSegmentChanged {}: {} - {}",
             timing.line_index, timing.line_char_from_index, timing.line_char_to_index
         );
@@ -251,7 +251,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         use dbus::channel::Sender;
         c.send(s).unwrap();
 
-        println!("ActiveLyricsChanged");
+        info!("ActiveLyricsChanged");
     };
 
     let (sender, receiver) = channel::<Event>();
