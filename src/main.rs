@@ -306,7 +306,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 }
                 Event::MetadataChange(metadata) => {
                     progress = Progress::new(
-                        Some(metadata.clone()),
+                        metadata.clone(),
                         progress.playback_status(),
                         progress.position(),
                     );

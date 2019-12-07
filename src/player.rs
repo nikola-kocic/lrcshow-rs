@@ -64,7 +64,7 @@ pub enum Event {
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
-    MetadataChange(Metadata),
+    MetadataChange(Option<Metadata>),
 }
 
 #[derive(Debug)]
@@ -132,13 +132,15 @@ fn query_player_playback_status(p: &ConnectionProxy) -> PlaybackStatus {
     parse_playback_status(&v)
 }
 
-fn parse_player_metadata<T: arg::RefArg>(metadata_map: HashMap<String, T>) -> Metadata {
+fn parse_player_metadata<T: arg::RefArg>(metadata_map: HashMap<String, T>) -> Option<Metadata> {
     debug!("metadata_map = {:?}", metadata_map);
-    let album = metadata_map["xesam:album"].as_str().unwrap().to_string();
-    let title = metadata_map["xesam:title"].as_str().unwrap().to_string();
-    let file_path_encoded = metadata_map["xesam:url"].as_str().unwrap().to_string();
+    // If playlist has reached end, new metadata event is sent,
+    // but it doesn't contain any of the following keys
+    let file_path_encoded = metadata_map.get("xesam:url")?.as_str().unwrap().to_string();
     let file_path_url = Url::parse(&file_path_encoded).unwrap();
     let file_path = file_path_url.to_file_path().unwrap();
+    let album = metadata_map["xesam:album"].as_str().unwrap().to_string();
+    let title = metadata_map["xesam:title"].as_str().unwrap().to_string();
     let length = metadata_map["mpris:length"].as_i64().unwrap();
     let artists: Vec<String> = metadata_map["xesam:artist"]
         .as_iter()
@@ -154,16 +156,16 @@ fn parse_player_metadata<T: arg::RefArg>(metadata_map: HashMap<String, T>) -> Me
         })
         .collect();
 
-    Metadata {
+    Some(Metadata {
         album,
         title,
         artists,
         file_path,
         length,
-    }
+    })
 }
 
-fn query_player_metadata(p: &ConnectionProxy) -> Metadata {
+fn query_player_metadata(p: &ConnectionProxy) -> Option<Metadata> {
     let metadata_map: DbusStringMap = query_player_property(p, "Metadata");
     parse_player_metadata(metadata_map)
 }
@@ -173,7 +175,7 @@ pub fn query_progress(p: &ConnectionProxy) -> Progress {
     let position = query_player_position(p);
     let instant = Instant::now();
     let metadata = if playback_status != PlaybackStatus::Stopped {
-        Some(query_player_metadata(p))
+        query_player_metadata(p)
     } else {
         None
     };
@@ -342,6 +344,7 @@ fn get_dbus_properties_changed_handler(
                 match k.as_ref() {
                     "PlaybackStatus" => {
                         let playback_status = v.as_str().unwrap();
+                        debug!("playback_status = {:?}", playback_status);
                         sender
                             .send(Event::PlaybackStatusChange(parse_playback_status(
                                 &playback_status,
@@ -350,6 +353,7 @@ fn get_dbus_properties_changed_handler(
                     }
                     "Metadata" => {
                         let metadata_map = get_message_item_dict(v);
+                        debug!("metadata_map = {:?}", metadata_map);
                         let metadata = parse_player_metadata(metadata_map);
                         sender.send(Event::MetadataChange(metadata)).unwrap();
                     }
