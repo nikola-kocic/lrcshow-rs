@@ -2,7 +2,7 @@
 
 import sys
 
-import gobject
+from gi.repository import GLib
 
 import dbus
 import dbus.mainloop.glib
@@ -44,5 +44,5 @@ if __name__ == '__main__':
         dbus_interface = "com.github.nikola_kocic.lrcshow_rs.Daemon",
         signal_name = "ActiveLyricsSegmentChanged")
 
-    loop = gobject.MainLoop()
+    loop = GLib.MainLoop()
     loop.run()
