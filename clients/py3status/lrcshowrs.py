@@ -103,8 +103,6 @@ class Py3status:
         line_char_from_index = self.lyrics_receiver.line_char_from_index
         line_char_to_index = self.lyrics_receiver.line_char_to_index
 
-        self.py3.log("lyrics_text = " + str(lyrics_text))
-        self.py3.log("line_index = " + str(line_index))
         active_line = lyrics_text[line_index]
         previous_line = (lyrics_text[line_index - 1] + " | "
                          if line_index > 0 else "")
