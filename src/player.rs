@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -8,7 +9,7 @@ use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
 use dbus::blocking::BlockingSender;
 use dbus::blocking::{Connection, Proxy};
 use dbus::{arg, Message};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use url::Url;
 
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -26,7 +27,7 @@ pub enum PlaybackStatus {
 
 #[derive(Clone, Debug)]
 pub struct Metadata {
-    album: String,
+    album: Option<String>,
     title: String,
     artists: Vec<String>,
     file_path: PathBuf,
@@ -35,7 +36,7 @@ pub struct Metadata {
 
 impl Metadata {
     #[allow(dead_code)]
-    pub fn album(&self) -> &String {
+    pub fn album(&self) -> &Option<String> {
         &self.album
     }
 
@@ -83,9 +84,9 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(
-        metadata: Option<Metadata>,
         playback_status: PlaybackStatus,
         position: Duration,
+        metadata: Option<Metadata>,
     ) -> Progress {
         Progress {
             metadata,
@@ -95,8 +96,12 @@ impl Progress {
         }
     }
 
-    pub fn metadata(&self) -> Option<Metadata> {
-        self.metadata.clone()
+    pub fn metadata(&self) -> &Option<Metadata> {
+        &self.metadata
+    }
+
+    pub fn take_metadata(self) -> Option<Metadata> {
+        self.metadata
     }
 
     pub fn playback_status(&self) -> PlaybackStatus {
@@ -112,79 +117,104 @@ impl Progress {
     }
 }
 
-fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> T
+fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String>
 where
     for<'b> T: dbus::arg::Get<'b>,
 {
-    p.get("org.mpris.MediaPlayer2.Player", name).unwrap()
+    p.get("org.mpris.MediaPlayer2.Player", name)
+        .map_err(|e| e.to_string())
 }
 
-pub fn query_player_position(p: &ConnectionProxy) -> Duration {
-    let v: i64 = query_player_property(p, "Position");
+pub fn query_player_position(p: &ConnectionProxy) -> Result<Duration, String> {
+    let v = query_player_property::<i64>(p, "Position")?;
     if v < 0 {
         panic!("Wrong position value");
     }
-    Duration::from_micros(v as u64)
+    Ok(Duration::from_micros(v.try_into().unwrap()))
 }
 
-fn query_player_playback_status(p: &ConnectionProxy) -> PlaybackStatus {
-    let v: String = query_player_property(p, "PlaybackStatus");
-    parse_playback_status(&v)
+fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, String> {
+    query_player_property::<String>(p, "PlaybackStatus").map(|v| parse_playback_status(&v))
 }
 
-fn parse_player_metadata<T: arg::RefArg>(metadata_map: HashMap<String, T>) -> Option<Metadata> {
+fn parse_player_metadata<T: arg::RefArg>(
+    metadata_map: HashMap<String, T>,
+) -> Result<Option<Metadata>, String> {
     debug!("metadata_map = {:?}", metadata_map);
-    // If playlist has reached end, new metadata event is sent,
-    // but it doesn't contain any of the following keys
-    let file_path_encoded = metadata_map.get("xesam:url")?.as_str().unwrap().to_string();
-    let file_path_url = Url::parse(&file_path_encoded).unwrap();
-    let file_path = file_path_url.to_file_path().unwrap();
-    let album = metadata_map["xesam:album"].as_str().unwrap().to_string();
-    let title = metadata_map["xesam:title"].as_str().unwrap().to_string();
-    let length = metadata_map["mpris:length"].as_i64().unwrap();
-    let artists: Vec<String> = metadata_map["xesam:artist"]
-        .as_iter()
-        .unwrap()
-        .map(|e| {
-            if let Some(s) = e.as_str() {
-                s.to_string()
-            } else if let Some(mut i) = e.as_iter() {
-                i.next().unwrap().as_str().unwrap().to_string()
-            } else {
-                panic!("")
-            }
-        })
-        .collect();
 
-    Some(Metadata {
+    let file_path_encoded = match metadata_map.get("xesam:url") {
+        Some(url) => url
+            .as_str()
+            .ok_or("url metadata should be string")?
+            .to_string(),
+
+        // If playlist has reached end, new metadata event is sent,
+        // but it doesn't contain any of the following keys
+        None => return Ok(None),
+    };
+
+    let file_path_url = Url::parse(&file_path_encoded)
+        .map_err(|e| format!("invalid format of url metadata: {}", e.to_string()))?;
+    let file_path = file_path_url
+        .to_file_path()
+        .map_err(|_| format!("invalid format of url metadata: {}", file_path_url))?;
+    let album = metadata_map
+        .get("xesam:album")
+        .map(|v| {
+            v.as_str()
+                .ok_or("album metadata should be string")
+                .map(|x| x.to_string())
+        })
+        .transpose()?;
+    let title = metadata_map["xesam:title"]
+        .as_str()
+        .ok_or("title metadata should be string")?
+        .to_string();
+    let length = metadata_map["mpris:length"]
+        .as_i64()
+        .ok_or("length metadata should be i64")?;
+    let artists = metadata_map["xesam:artist"]
+        .as_iter()
+        .ok_or("artist metadata should be iterator")?
+        .next()
+        .ok_or("artist metadata should contain at least one entry")?
+        .as_iter()
+        .ok_or("artist metadata should have nested iterator")?
+        .map(|x| {
+            Ok(x.as_str()
+                .ok_or("artist metadata values should be string")?
+                .to_string())
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+
+    Ok(Some(Metadata {
         album,
         title,
         artists,
         file_path,
         length,
-    })
+    }))
 }
 
-fn query_player_metadata(p: &ConnectionProxy) -> Option<Metadata> {
-    let metadata_map: DbusStringMap = query_player_property(p, "Metadata");
-    parse_player_metadata(metadata_map)
+fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String> {
+    query_player_property::<DbusStringMap>(p, "Metadata").and_then(parse_player_metadata)
 }
 
-pub fn query_progress(p: &ConnectionProxy) -> Progress {
-    let playback_status = query_player_playback_status(p);
-    let position = query_player_position(p);
+pub fn query_progress(p: &ConnectionProxy) -> Result<Progress, String> {
+    let playback_status = query_player_playback_status(p)?;
+    let position = query_player_position(p)?;
     let instant = Instant::now();
     let metadata = if playback_status != PlaybackStatus::Stopped {
-        query_player_metadata(p)
+        query_player_metadata(p)?
     } else {
         None
     };
-    Progress {
+    Ok(Progress {
         metadata,
         playback_status,
         instant,
         position,
-    }
+    })
 }
 
 fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
@@ -196,33 +226,38 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     }
 }
 
-fn query_unique_owner_name<S: Into<String>>(c: &Connection, bus_name: S) -> Option<String> {
+fn query_unique_owner_name<S: Into<String>>(c: &Connection, bus_name: S) -> Result<String, String> {
     let get_name_owner = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
         "org.freedesktop.DBus",
         "GetNameOwner",
     )
-    .unwrap()
+    .map_err(|e| e.to_string())?
     .append1(bus_name.into());
 
     c.send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
-        .ok()
-        .and_then(|reply| reply.get1())
+        .map_err(|e| e.to_string())
+        .map(|reply| {
+            reply
+                .get1()
+                .expect("GetNameOwner must have name as first member")
+        })
 }
 
-fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, dbus::Error> {
+fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, String> {
     let list_names = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
         "org.freedesktop.DBus",
         "ListNames",
-    )
-    .unwrap();
+    )?;
 
-    let reply = c.send_with_reply_and_block(list_names, Duration::from_millis(500))?;
+    let reply = c
+        .send_with_reply_and_block(list_names, Duration::from_millis(500))
+        .map_err(|e| e.to_string())?;
 
-    let names: arg::Array<&str, _> = reply.read1()?;
+    let names: arg::Array<&str, _> = reply.read1().map_err(|e| e.to_string())?;
 
     Ok(names
         .filter(|name| name.starts_with(MPRIS2_PREFIX))
@@ -260,9 +295,9 @@ impl dbus::message::SignalArgs for DbusPropertiesChangedHappened {
 impl arg::ReadAll for DbusPropertiesChangedHappened {
     fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
         Ok(Self {
-            interface_name: i.read().unwrap(),
-            changed_properties: i.read().unwrap(),
-            invalidated_properties: i.read().unwrap(),
+            interface_name: i.read()?,
+            changed_properties: i.read()?,
+            invalidated_properties: i.read()?,
         })
     }
 }
@@ -280,7 +315,7 @@ impl dbus::message::SignalArgs for MediaPlayer2SeekedHappened {
 impl arg::ReadAll for MediaPlayer2SeekedHappened {
     fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
         Ok(Self {
-            position_us: i.read().unwrap(),
+            position_us: i.read()?,
         })
     }
 }
@@ -300,9 +335,9 @@ impl dbus::message::SignalArgs for DbusNameOwnedChanged {
 impl arg::ReadAll for DbusNameOwnedChanged {
     fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
         Ok(Self {
-            name: i.read().unwrap(),
-            new_owner: i.read().unwrap(),
-            old_owner: i.read().unwrap(),
+            name: i.read()?,
+            new_owner: i.read()?,
+            old_owner: i.read()?,
         })
     }
 }
@@ -354,7 +389,7 @@ fn get_dbus_properties_changed_handler(
                     "Metadata" => {
                         let metadata_map = get_message_item_dict(v);
                         debug!("metadata_map = {:?}", metadata_map);
-                        let metadata = parse_player_metadata(metadata_map);
+                        let metadata = parse_player_metadata(metadata_map).unwrap();
                         sender.send(Event::MetadataChange(metadata)).unwrap();
                     }
                     _ => {
@@ -388,31 +423,34 @@ fn get_dbus_name_owned_changed_handler(
     }
 }
 
-pub fn subscribe<'a>(c: &'a Connection, player: &str, sender: &Sender<Event>) -> Option<String> {
-    let all_player_buses = query_all_player_buses(&c).unwrap();
+pub fn subscribe<'a>(
+    c: &'a Connection,
+    player: &str,
+    sender: &Sender<Event>,
+) -> Result<String, String> {
+    let all_player_buses = query_all_player_buses(&c)?;
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
     if !all_player_buses.contains(&player_bus) {
-        error!("Player not running");
         info!("all players = {:?}", all_player_buses);
-        return None;
+        return Err("Player not running".to_owned());
     }
 
-    let player_owner_name = query_unique_owner_name(&c, player_bus).unwrap();
+    let player_owner_name = query_unique_owner_name(&c, player_bus)?;
     debug!("player_owner_name = {:?}", player_owner_name);
 
     let p = get_connection_proxy(c, &player_owner_name);
 
     p.match_signal(get_dbus_properties_changed_handler(sender.clone()))
-        .unwrap();
+        .map_err(|e| e.to_string())?;
 
     p.match_signal(get_mediaplayer2_seeked_handler(sender.clone()))
-        .unwrap();
+        .map_err(|e| e.to_string())?;
 
     // p.match_signal(|_: MediaPlayer2TrackListChangeHappened, _: &Connection| {
     //     debug!("TrackList happened");
     //     true
-    // }).unwrap();
+    // }).map_err(|e| e.to_string())?;
 
     let proxy_generic_dbus = c.with_proxy(
         "org.freedesktop.DBus",
@@ -424,6 +462,6 @@ pub fn subscribe<'a>(c: &'a Connection, player: &str, sender: &Sender<Event>) ->
             sender.clone(),
             player_owner_name.clone(),
         ))
-        .unwrap();
-    Some(player_owner_name)
+        .map_err(|e| e.to_string())?;
+    Ok(player_owner_name)
 }

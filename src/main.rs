@@ -97,7 +97,7 @@ impl<'a> LrcTimedTextState<'a> {
             if current_duration >= (timed_text.time - (REFRESH_EVERY / 2)) {
                 self.current = Some(timed_text);
                 self.next = self.iter.next();
-                return Some((current_duration, self.current.unwrap()));
+                return Some((current_duration, timed_text));
             }
         }
         None
@@ -112,44 +112,61 @@ struct LrcManager {
 }
 
 impl LrcManager {
-    fn new(lrc_filepath: PathBuf) -> Self {
+    fn new(lrc_filepath: PathBuf) -> Option<Self> {
         let (tx, rx) = channel();
-        let watcher = create_watcher(tx, lrc_filepath.parent().unwrap());
-        let lrc_file = lrc::parse_lrc_file(&lrc_filepath).unwrap();
+        let watcher = create_watcher(tx, lrc_filepath.parent()?)
+            .map_err(|e| error!("Creating watched failed: {}", e))
+            .ok()?;
+        let lrc_file = lrc::parse_lrc_file(&lrc_filepath)
+            .map_err(|e| error!("Parsing lrc file failed: {}", e))
+            .ok()?;
         debug!("lrc_file = {:?}", lrc_file);
         let lyrics = Lyrics::new(lrc_file);
-        LrcManager {
+        Some(LrcManager {
             lyrics,
             rx,
             _watcher: watcher,
             lrc_filepath,
-        }
+        })
     }
 
     fn new_timed_text_state<'a>(&'a self, progress: &Progress) -> LrcTimedTextState<'a> {
         LrcTimedTextState::new(&self.lyrics, progress)
     }
 
-    fn maybe_recreate(&self) -> Option<LrcManager> {
-        if let Ok(x) = self.rx.try_recv() {
-            match x {
+    fn should_recreate(&self) -> bool {
+        self.rx
+            .try_recv()
+            .ok()
+            .map(|event| match event {
                 notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
-                    if path == self.lrc_filepath {
-                        info!("Reloading lyrics");
-                        return Some(LrcManager::new(self.lrc_filepath.clone()));
-                    }
+                    path == self.lrc_filepath
                 }
-                _ => {}
-            }
+                _ => false,
+            })
+            .unwrap_or(false)
+    }
+
+    fn maybe_recreate(&self) -> Option<LrcManager> {
+        if self.should_recreate() {
+            info!("Reloading lyrics");
+            LrcManager::new(self.lrc_filepath.clone())
+        } else {
+            None
         }
-        None
     }
 }
 
-fn create_watcher(tx: Sender<notify::DebouncedEvent>, folderpath: &Path) -> RecommendedWatcher {
-    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_millis(100)).unwrap();
-    watcher.watch(folderpath, RecursiveMode::Recursive).unwrap();
-    watcher
+fn create_watcher(
+    tx: Sender<notify::DebouncedEvent>,
+    folder_path: &Path,
+) -> Result<RecommendedWatcher, String> {
+    RecommendedWatcher::new(tx, Duration::from_millis(100))
+        .and_then(|mut watcher| {
+            watcher.watch(folder_path, RecursiveMode::Recursive)?;
+            Ok(watcher)
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
@@ -186,7 +203,9 @@ fn read_events(c: &mut Connection, receiver: &Receiver<Event>) -> Option<Vec<Eve
     Some(v)
 }
 
-fn run_dbus_server(active_lyrics_lines: Arc<Mutex<Vec<String>>>) -> Result<(), dbus::Error> {
+fn run_dbus_server(
+    active_lyrics_lines: Arc<Mutex<Option<Vec<String>>>>,
+) -> Result<(), dbus::Error> {
     let mut c = Connection::new_session().unwrap();
     c.request_name("com.github.nikola_kocic.lrcshow_rs", false, true, false)?;
     let f = Factory::new_fn::<()>();
@@ -197,11 +216,14 @@ fn run_dbus_server(active_lyrics_lines: Arc<Mutex<Vec<String>>>) -> Result<(), d
                 f.interface("com.github.nikola_kocic.lrcshow_rs.Lyrics", ())
                     .add_m(
                         f.method("GetCurrentLyrics", (), move |m| {
-                            let v = active_lyrics_lines.lock().unwrap().clone();
+                            let v = active_lyrics_lines.lock().unwrap();
                             debug!("GetCurrentLyrics called");
-                            Ok(vec![m.msg.method_return().append1(v)])
+                            Ok(vec![m
+                                .msg
+                                .method_return()
+                                .append1(v.as_ref().map(|x| x.as_slice()).unwrap_or(&[]))])
                         })
-                        .outarg::<Vec<&str>, _>("reply"),
+                        .outarg::<(&str,), _>("reply"),
                     ),
             ),
     );
@@ -214,7 +236,7 @@ fn run_dbus_server(active_lyrics_lines: Arc<Mutex<Vec<String>>>) -> Result<(), d
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let mut c = Connection::new_session().unwrap();
 
-    let active_lyrics_lines = Arc::new(Mutex::new(Vec::new()));
+    let active_lyrics_lines = Arc::new(Mutex::new(None));
     let active_lyrics_lines_clone = active_lyrics_lines.clone();
     thread::spawn(move || {
         run_dbus_server(active_lyrics_lines_clone).unwrap();
@@ -255,64 +277,63 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     };
 
     let (sender, receiver) = channel::<Event>();
-    let player_owner_name = player::subscribe(&c, &player, &sender)?;
+    let player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
 
-    let mut progress = player::query_progress(&get_connection_proxy(&c, &player_owner_name));
+    let mut progress =
+        player::query_progress(&get_connection_proxy(&c, &player_owner_name)).unwrap();
     debug!("progress = {:?}", progress);
 
     let mut lrc = None;
     let mut lrc_state = None;
     if let Some(filepath) = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
-        lrc = Some(LrcManager::new(filepath));
+        lrc = LrcManager::new(filepath);
         lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
     }
     {
         let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-        *active_lyrics_lines = lrc
-            .as_ref()
-            .map(|l| l.lyrics.lines.clone())
-            .unwrap_or_else(Vec::new);
+        *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
         on_lyrics_changed(&c);
     }
 
     loop {
         let events = read_events(&mut c, &receiver)?;
-        for event in &events {
+        let received_events = !events.is_empty();
+        for event in events {
             debug!("{:?}", event);
             let p = get_connection_proxy(&c, &player_owner_name);
             match event {
                 Event::Seeked { position } => {
-                    progress =
-                        Progress::new(progress.metadata(), progress.playback_status(), *position);
+                    progress = Progress::new(
+                        progress.playback_status(),
+                        position,
+                        progress.take_metadata(),
+                    );
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Playing) => {
                     // position was already queryied on pause and seek
                     progress = Progress::new(
-                        progress.metadata(),
                         PlaybackStatus::Playing,
                         progress.position(),
+                        progress.take_metadata(),
                     );
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Stopped) => {
                     progress =
-                        Progress::new(None, PlaybackStatus::Stopped, Duration::from_millis(0));
+                        Progress::new(PlaybackStatus::Stopped, Duration::from_millis(0), None);
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Paused) => {
                     progress = Progress::new(
-                        progress.metadata(),
                         PlaybackStatus::Paused,
-                        player::query_player_position(&p),
+                        player::query_player_position(&p).unwrap(),
+                        progress.take_metadata(),
                     );
                 }
                 Event::MetadataChange(metadata) => {
-                    progress = Progress::new(
-                        metadata.clone(),
-                        progress.playback_status(),
-                        progress.position(),
-                    );
+                    progress =
+                        Progress::new(progress.playback_status(), progress.position(), metadata);
                     match get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
                         Some(filepath) => {
-                            lrc = Some(LrcManager::new(filepath));
+                            lrc = LrcManager::new(filepath);
                             lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
                         }
                         None => {
@@ -322,10 +343,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     }
                     {
                         let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-                        *active_lyrics_lines = lrc
-                            .as_ref()
-                            .map(|l| l.lyrics.lines.clone())
-                            .unwrap_or_else(Vec::new);
+                        *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
                         on_lyrics_changed(&c);
 
                         on_active_lyrics_segment_changed(
@@ -350,7 +368,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         if let Some(new_lrc) = lrc.as_ref().and_then(|l| l.maybe_recreate()) {
             {
                 let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-                *active_lyrics_lines = new_lrc.lyrics.lines.clone();
+                *active_lyrics_lines = Some(new_lrc.lyrics.lines.clone());
                 on_lyrics_changed(&c);
             }
             lrc = Some(new_lrc);
@@ -358,7 +376,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         }
 
         // Print new lyrics line, if needed
-        if !events.is_empty() {
+        if received_events {
             lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
             if let Some(timed_text) = lrc_state.as_ref().and_then(|l| l.current) {
                 on_active_lyrics_segment_changed(timed_text, &c);
