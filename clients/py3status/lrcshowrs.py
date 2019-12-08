@@ -21,27 +21,34 @@ class LrcReceiver:
         self.line_char_to_index = None
 
     def _read_lyrics(self):
-        hal_manager_object = self.bus.get_object(
-            'com.github.nikola_kocic.lrcshow_rs',
-            '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
-        hal_manager_interface = dbus.Interface(
-            hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
-        lyrics_text_raw = hal_manager_interface.GetCurrentLyrics()
-        self.lyrics_text = [str(x) for x in lyrics_text_raw]
-        self.logger("New lyrics: " + str(self.lyrics_text))
+        lyrics_text = None
+
+        try:
+            hal_manager_object = self.bus.get_object(
+                'com.github.nikola_kocic.lrcshow_rs',
+                '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
+            hal_manager_interface = dbus.Interface(
+                hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
+            lyrics_text_raw = hal_manager_interface.GetCurrentLyrics()
+            lyrics_text = [str(x) for x in lyrics_text_raw]
+            self.logger("New lyrics: " + str(lyrics_text))
+        except dbus.exceptions.DBusException as e:
+            self.logger("Exception getting lyrics: " + str(e))
+
+        return lyrics_text
 
     def _on_active_lyrics_line_changed(
             self, line_index, line_char_from_index, line_char_to_index):
         self.logger("_on_active_lyrics_line_changed: " + str(line_index))
         if self.lyrics_text is None:
-            self._read_lyrics()
+            self.lyrics_text = self._read_lyrics()
         self.line_index = line_index
         self.line_char_from_index = line_char_from_index
         self.line_char_to_index = line_char_to_index
         self.update_callback()
 
     def _on_active_lyrics_changed(self):
-        self._read_lyrics()
+        self.lyrics_text = self._read_lyrics()
         self.line_index = None
         self.line_char_from_index = None
         self.line_char_to_index = None
@@ -51,8 +58,6 @@ class LrcReceiver:
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
         self.bus = dbus.SessionBus()
-        if self.lyrics_text is None:
-            self._read_lyrics()
 
         self.bus.add_signal_receiver(
             self._on_active_lyrics_line_changed,
