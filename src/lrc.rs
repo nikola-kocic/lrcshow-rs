@@ -6,14 +6,14 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-use log::{debug, info};
+use log::debug;
 
 fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
     let file = File::open(filepath).map_err(|e| e.to_string())?;
-    Ok(io::BufReader::new(file)
+    io::BufReader::new(file)
         .lines()
-        .map(|l| l.expect("Could not parse line"))
-        .collect())
+        .map(|l| l.map_err(|e| e.to_string()))
+        .collect()
 }
 
 pub struct TimedLocation {
@@ -62,20 +62,28 @@ pub struct LrcFile {
 
 fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let minutes_str = &time_str[0..2];
-    let minutes = u64::from_str_radix(&minutes_str, 10).expect("Bad minutes format");
+    let minutes = u64::from_str_radix(&minutes_str, 10)
+        .map_err(|e| format!("Bad minutes format ({}): {}", minutes_str, e.to_string()))?;
 
     if &time_str[2..3] != ":" {
-        return Err(String::from("Bad seconds divider"));
+        return Err("Bad seconds divider".to_owned());
     }
     let seconds_str = &time_str[3..5];
-    let seconds = u64::from_str_radix(&seconds_str, 10).expect("Bad seconds format");
+    let seconds = u64::from_str_radix(&seconds_str, 10)
+        .map_err(|e| format!("Bad seconds format ({}): {}", seconds_str, e.to_string()))?;
 
     let ms_divider_char = &time_str[5..6];
     if ms_divider_char != "." && ms_divider_char != ":" {
-        return Err(String::from("Bad milliseconds divider"));
+        return Err(format!("Bad milliseconds divider: {}", ms_divider_char));
     }
     let centiseconds_str = &time_str[6..8];
-    let centiseconds = u64::from_str_radix(&centiseconds_str, 10).expect("Bad centiseconds format");
+    let centiseconds = u64::from_str_radix(&centiseconds_str, 10).map_err(|e| {
+        format!(
+            "Bad centiseconds format ({}): {}",
+            centiseconds_str,
+            e.to_string()
+        )
+    })?;
 
     Ok(Duration::from_micros(
         ((((minutes * 60) + seconds) * 100) + centiseconds) * 10000,
@@ -84,17 +92,26 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
 
 fn parse_tag(tag_content: &str) -> Result<Tag, String> {
     debug!("Parsing tag content {}", tag_content);
-    let first_char_in_tag_name = tag_content.chars().next().expect("Invalid lrc file format");
+    let first_char_in_tag_name = tag_content
+        .chars()
+        .next()
+        .ok_or("Tag content must not be empty")?;
     if first_char_in_tag_name.is_ascii_digit() {
         let time = duration_from_time_string(tag_content)?;
         Ok(Tag::Time(time))
     } else {
         let mut parts = tag_content.split(':');
-        let tag_first_part = parts.next().unwrap();
+        let tag_first_part = parts
+            .next()
+            .expect("Should never happen; split always returns at least one element");
         match tag_first_part {
             "offset" => {
-                let offset_val_str = parts.next().unwrap();
-                let offset = i64::from_str_radix(&offset_val_str, 10).expect("Bad offset format");
+                let offset_val_str = parts.next().ok_or_else(|| {
+                    format!("Wrong offset tag format (missing ':'): {}", tag_content)
+                })?;
+                let offset = i64::from_str_radix(&offset_val_str, 10).map_err(|e| {
+                    format!("Bad offset format ({}): {}", offset_val_str, e.to_string())
+                })?;
                 Ok(Tag::Offset(offset))
             }
             _ => Ok(Tag::Unknown),
@@ -113,7 +130,9 @@ fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
             let mut texts = Vec::new();
             for part in parts.skip(1) {
                 let mut subparts = part.split(']');
-                let tag_content = subparts.next().unwrap();
+                let tag_content = subparts
+                    .next()
+                    .expect("Should never happen; split always returns at least one element");
                 let mut text_len: i32 = 0;
 
                 if let Some(text) = subparts.next() {
@@ -153,7 +172,6 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
             LrcLine::TimedText(mut t) => {
                 if offset_ms != 0 {
                     for timing in &mut t.timings {
-                        info!("Adjusting with offset {}", offset_ms);
                         let prev_time_ms: i64 = timing.time.as_millis().try_into().unwrap();
                         timing.time =
                             Duration::from_millis((prev_time_ms + offset_ms).try_into().unwrap());
