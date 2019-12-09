@@ -29,7 +29,7 @@ pub enum PlaybackStatus {
 pub struct Metadata {
     album: Option<String>,
     title: String,
-    artists: Vec<String>,
+    artists: Option<Vec<String>>,
     file_path: PathBuf,
     length: i64,
 }
@@ -46,7 +46,7 @@ impl Metadata {
     }
 
     #[allow(dead_code)]
-    pub fn artists(&self) -> &Vec<String> {
+    pub fn artists(&self) -> &Option<Vec<String>> {
         &self.artists
     }
 
@@ -173,19 +173,23 @@ fn parse_player_metadata<T: arg::RefArg>(
     let length = metadata_map["mpris:length"]
         .as_i64()
         .ok_or("length metadata should be i64")?;
-    let artists = metadata_map["xesam:artist"]
-        .as_iter()
-        .ok_or("artist metadata should be iterator")?
-        .next()
-        .ok_or("artist metadata should contain at least one entry")?
-        .as_iter()
-        .ok_or("artist metadata should have nested iterator")?
-        .map(|x| {
-            Ok(x.as_str()
-                .ok_or("artist metadata values should be string")?
-                .to_string())
+    let artists = metadata_map
+        .get("xesam:artist")
+        .map(|v| {
+            v.as_iter()
+                .ok_or("artist metadata should be iterator")?
+                .next()
+                .ok_or("artist metadata should contain at least one entry")?
+                .as_iter()
+                .ok_or("artist metadata should have nested iterator")?
+                .map(|x| {
+                    Ok(x.as_str()
+                        .ok_or("artist metadata values should be string")?
+                        .to_string())
+                })
+                .collect::<Result<Vec<String>, &'static str>>()
         })
-        .collect::<Result<Vec<String>, String>>()?;
+        .transpose()?;
 
     Ok(Some(Metadata {
         album,
