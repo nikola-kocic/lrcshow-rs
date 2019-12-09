@@ -62,6 +62,7 @@ impl Metadata {
 
 #[derive(Debug)]
 pub enum Event {
+    PlayerStarted,
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
@@ -121,8 +122,8 @@ fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String
 where
     for<'b> T: dbus::arg::Get<'b>,
 {
-    p.get("org.mpris.MediaPlayer2.Player", name)
-        .map_err(|e| e.to_string())
+    Ok(p.get("org.mpris.MediaPlayer2.Player", name).unwrap())
+        // .map_err(|e| e.to_string())
 }
 
 pub fn query_player_position(p: &ConnectionProxy) -> Result<Duration, String> {
@@ -230,7 +231,7 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     }
 }
 
-fn query_unique_owner_name<S: Into<String>>(c: &Connection, bus_name: S) -> Result<String, String> {
+fn query_unique_owner_name(c: &Connection, bus_name: &str) -> Result<String, String> {
     let get_name_owner = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
@@ -238,7 +239,7 @@ fn query_unique_owner_name<S: Into<String>>(c: &Connection, bus_name: S) -> Resu
         "GetNameOwner",
     )
     .map_err(|e| e.to_string())?
-    .append1(bus_name.into());
+    .append1(bus_name);
 
     c.send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
         .map_err(|e| e.to_string())
@@ -350,6 +351,7 @@ pub fn get_connection_proxy<'a>(
     c: &'a Connection,
     player_owner_name: &'a str,
 ) -> ConnectionProxy<'a> {
+    debug!("get_connection_proxy with {}", player_owner_name);
     c.with_proxy(player_owner_name, MPRIS2_PATH, Duration::from_millis(5000))
 }
 
@@ -415,13 +417,14 @@ fn get_dbus_properties_changed_handler(
 
 fn get_dbus_name_owned_changed_handler(
     sender: Sender<Event>,
-    player_owner_name: String,
+    player_bus: String,
 ) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
     move |e: DbusNameOwnedChanged, _: &Connection| {
         debug!("DbusNameOwnedChanged happened: {:?}", e);
-        if e.name == player_owner_name && e.old_owner.is_empty() && e.new_owner == player_owner_name
-        {
+        if e.name == player_bus && e.old_owner.is_empty() {
             sender.send(Event::PlayerShutDown).unwrap();
+        } else if e.name == player_bus && e.new_owner.is_empty() {
+            sender.send(Event::PlayerStarted).unwrap();
         }
         true
     }
@@ -431,16 +434,16 @@ pub fn subscribe<'a>(
     c: &'a Connection,
     player: &str,
     sender: &Sender<Event>,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let all_player_buses = query_all_player_buses(&c)?;
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
     if !all_player_buses.contains(&player_bus) {
         info!("all players = {:?}", all_player_buses);
-        return Err("Player not running".to_owned());
+        return Ok(None);
     }
 
-    let player_owner_name = query_unique_owner_name(&c, player_bus)?;
+    let player_owner_name = query_unique_owner_name(&c, &player_bus)?;
     debug!("player_owner_name = {:?}", player_owner_name);
 
     let p = get_connection_proxy(c, &player_owner_name);
@@ -456,6 +459,16 @@ pub fn subscribe<'a>(
     //     true
     // }).map_err(|e| e.to_string())?;
 
+    Ok(Some(player_owner_name))
+}
+
+pub fn subscribe_to_player_start_stop<'a>(
+    c: &'a Connection,
+    player: &str,
+    sender: &Sender<Event>,
+) -> Result<(), String> {
+    let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
+
     let proxy_generic_dbus = c.with_proxy(
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
@@ -464,8 +477,8 @@ pub fn subscribe<'a>(
     proxy_generic_dbus
         .match_signal(get_dbus_name_owned_changed_handler(
             sender.clone(),
-            player_owner_name.clone(),
+            player_bus.clone(),
         ))
         .map_err(|e| e.to_string())?;
-    Ok(player_owner_name)
+    Ok(())
 }

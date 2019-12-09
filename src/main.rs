@@ -277,64 +277,88 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     };
 
     let (sender, receiver) = channel::<Event>();
-    let player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
-
-    let mut progress =
-        player::query_progress(&get_connection_proxy(&c, &player_owner_name)).unwrap();
-    debug!("progress = {:?}", progress);
+    player::subscribe_to_player_start_stop(&c, &player, &sender).unwrap();
+    let mut player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
 
     let mut lrc = None;
     let mut lrc_state = None;
-    if let Some(filepath) = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
-        lrc = LrcManager::new(filepath);
-        lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
-    }
-    {
-        let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-        *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
-        on_lyrics_changed(&c);
-    }
+    let mut progress: Option<Progress> = None;
+    let mut init = player_owner_name.is_some();
 
     loop {
+        if init {
+            init = false;
+            player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
+            progress = Some(player::query_progress(&get_connection_proxy(
+                &c,
+                &player_owner_name.clone().unwrap(),
+            ))
+            .unwrap());  // TODO: This is often crashing on player restart
+            debug!("progress = {:?}", progress);
+
+            if let Some(progress) = progress.as_ref() {
+                if let Some(filepath) =
+                    get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone())
+                {
+                    lrc = LrcManager::new(filepath);
+                    lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+                }
+                {
+                    let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
+                    *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
+                    on_lyrics_changed(&c);
+                }
+            }
+        }
+
         let events = read_events(&mut c, &receiver)?;
         let received_events = !events.is_empty();
         for event in events {
             debug!("{:?}", event);
-            let p = get_connection_proxy(&c, &player_owner_name);
             match event {
                 Event::Seeked { position } => {
-                    progress = Progress::new(
-                        progress.playback_status(),
-                        position,
-                        progress.take_metadata(),
-                    );
+                    progress = progress
+                        .map(|p| Progress::new(p.playback_status(), position, p.take_metadata()));
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Playing) => {
                     // position was already queryied on pause and seek
-                    progress = Progress::new(
-                        PlaybackStatus::Playing,
-                        progress.position(),
-                        progress.take_metadata(),
-                    );
+                    progress = progress.map(|p| {
+                        Progress::new(PlaybackStatus::Playing, p.position(), p.take_metadata())
+                    });
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Stopped) => {
-                    progress =
-                        Progress::new(PlaybackStatus::Stopped, Duration::from_millis(0), None);
+                    progress = Some(Progress::new(
+                        PlaybackStatus::Stopped,
+                        Duration::from_millis(0),
+                        None,
+                    ));
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Paused) => {
-                    progress = Progress::new(
-                        PlaybackStatus::Paused,
-                        player::query_player_position(&p).unwrap(),
-                        progress.take_metadata(),
-                    );
+                    progress = progress.as_ref().map(|p| {
+                        Progress::new(
+                            PlaybackStatus::Paused,
+                            player::query_player_position(&get_connection_proxy(
+                                &c,
+                                &player_owner_name.clone().unwrap(),
+                            ))
+                            .unwrap(),
+                            p.metadata().clone(),
+                        )
+                    });
                 }
                 Event::MetadataChange(metadata) => {
-                    progress =
-                        Progress::new(progress.playback_status(), progress.position(), metadata);
-                    match get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone()) {
+                    progress = progress
+                        .map(|p| Progress::new(p.playback_status(), p.position(), metadata));
+                    match progress
+                        .as_ref()
+                        .and_then(|p| get_lrc_filepath(&p))
+                        .or_else(|| lrc_filepath.clone())
+                    {
                         Some(filepath) => {
                             lrc = LrcManager::new(filepath);
-                            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+                            lrc_state = lrc.as_ref().and_then(|l| {
+                                progress.as_ref().map(|p| l.new_timed_text_state(&p))
+                            });
                         }
                         None => {
                             lrc = None;
@@ -358,7 +382,12 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     }
                 }
                 Event::PlayerShutDown => {
-                    return Some(());
+                    // return Some(());
+                    progress = None;
+                    player_owner_name = None;
+                }
+                Event::PlayerStarted => {
+                    init = true;
                 }
             }
 
@@ -372,19 +401,23 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 on_lyrics_changed(&c);
             }
             lrc = Some(new_lrc);
-            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+            lrc_state = lrc
+                .as_ref()
+                .and_then(|l| progress.as_ref().map(|p| l.new_timed_text_state(&p)));
         }
 
         // Print new lyrics line, if needed
         if received_events {
-            lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
+            lrc_state = lrc
+                .as_ref()
+                .and_then(|l| progress.as_ref().map(|p| l.new_timed_text_state(&p)));
             if let Some(timed_text) = lrc_state.as_ref().and_then(|l| l.current) {
                 on_active_lyrics_segment_changed(timed_text, &c);
             }
-        } else if progress.playback_status() == PlaybackStatus::Playing {
+        } else if progress.as_ref().map(|p| p.playback_status()) == Some(PlaybackStatus::Playing) {
             if let Some((duration, timed_text)) = lrc_state
                 .as_mut()
-                .and_then(|l| l.on_new_progress(&progress))
+                .and_then(|l| progress.as_ref().and_then(|p| l.on_new_progress(&p)))
             {
                 on_active_lyrics_segment_changed(timed_text, &c);
                 debug!(
