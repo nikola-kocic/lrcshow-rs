@@ -19,17 +19,22 @@ class LrcReceiver:
         self.line_index = None
         self.line_char_from_index = None
         self.line_char_to_index = None
+        self.hal_manager_interface = None
+
+    def _get_hal_manager(self):
+        if self.hal_manager_interface is None:
+            hal_manager_object = self.bus.get_object(
+                'com.github.nikola_kocic.lrcshow_rs',
+                '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
+            self.hal_manager_interface = dbus.Interface(
+                hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
+        return self.hal_manager_interface
 
     def _read_lyrics(self):
         lyrics_text = None
 
         try:
-            hal_manager_object = self.bus.get_object(
-                'com.github.nikola_kocic.lrcshow_rs',
-                '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
-            hal_manager_interface = dbus.Interface(
-                hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
-            lyrics_text_raw = hal_manager_interface.GetCurrentLyrics()
+            lyrics_text_raw = self._get_hal_manager().GetCurrentLyrics()
             lyrics_text = [str(x) for x in lyrics_text_raw]
             self.logger("New lyrics: " + str(lyrics_text))
         except dbus.exceptions.DBusException as e:
@@ -37,27 +42,51 @@ class LrcReceiver:
 
         return lyrics_text
 
+    def _update_lyrics_position(self):
+        try:
+            lyrics_position = self._get_hal_manager().GetCurrentLyricsPosition()
+            if lyrics_position[0] < 0:
+                self.line_index = None
+                self.line_char_from_index = None
+                self.line_char_to_index = None
+            else:
+                self.line_index = lyrics_position[0]
+                self.line_char_from_index = lyrics_position[1]
+                self.line_char_to_index = lyrics_position[2]
+            self.logger("Got lyrics position: " + str(lyrics_position))
+        except dbus.exceptions.DBusException as e:
+            self.logger("Exception getting lyrics position: " + str(e))
+
     def _on_active_lyrics_line_changed(
-            self, line_index, line_char_from_index, line_char_to_index):
+            self, line_index, line_char_from_index, line_char_to_index, *args, **kwargs):
         self.logger("_on_active_lyrics_line_changed: " + str(line_index))
         if self.lyrics_text is None:
             self.lyrics_text = self._read_lyrics()
-        self.line_index = line_index
-        self.line_char_from_index = line_char_from_index
-        self.line_char_to_index = line_char_to_index
+        if line_index < 0:
+            self.line_index = None
+            self.line_char_from_index = None
+            self.line_char_to_index = None
+        else:
+            self.line_index = line_index
+            self.line_char_from_index = line_char_from_index
+            self.line_char_to_index = line_char_to_index
         self.update_callback()
 
     def _on_active_lyrics_changed(self):
-        self.lyrics_text = self._read_lyrics()
         self.line_index = None
         self.line_char_from_index = None
         self.line_char_to_index = None
+        self.lyrics_text = self._read_lyrics()
         self.update_callback()
 
     def start_loop(self):
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
         self.bus = dbus.SessionBus()
+
+        self.lyrics_text = self._read_lyrics()
+        self._update_lyrics_position()
+        self.update_callback()
 
         self.bus.add_signal_receiver(
             self._on_active_lyrics_line_changed,
@@ -86,7 +115,9 @@ class Py3status:
         self.lyrics_receiver = None
 
     def post_config_hook(self):
-        self.lyrics_receiver = LrcReceiver(self.py3.update, self.py3.log)
+        log = lambda t: None
+        # log = self.py3.log
+        self.lyrics_receiver = LrcReceiver(self.py3.update, log)
 
     def _start_handler_thread(self):
         """Called once to start the event handler thread."""
@@ -140,7 +171,9 @@ class TerminalPrinter:
     def __init__(self):
         self.last_line_index = -1
 
-        self.lyrics_receiver = LrcReceiver(self.update, lambda t: None)
+        log = lambda t: None
+        # log = print
+        self.lyrics_receiver = LrcReceiver(self.update, log)
         self.lyrics_receiver.start_loop()
 
     def update(self):
