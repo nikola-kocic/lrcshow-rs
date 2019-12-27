@@ -70,51 +70,37 @@ pub enum Event {
 }
 
 #[derive(Debug)]
-pub struct Progress {
-    /// If player is stopped, metadata will be None
-    metadata: Option<Metadata>,
+pub struct TimedEvent {
+    pub instant: Instant,
+    pub event: Event,
+}
 
-    playback_status: PlaybackStatus,
+#[derive(Debug)]
+pub struct PositionSnapshot {
+    /// Position at the time of construction
+    pub position: Duration,
 
     /// When this Progress was constructed, in order to calculate how old it is.
-    instant: Instant,
+    pub instant: Instant,
+}
 
-    /// Position at the time of construction
-    position: Duration,
+#[derive(Debug)]
+pub struct Progress {
+    pub playback_status: PlaybackStatus,
+
+    pub position_snapshot: PositionSnapshot,
+
+    /// If player is stopped, metadata will be None
+    pub metadata: Option<Metadata>,
 }
 
 impl Progress {
-    pub fn new(
-        playback_status: PlaybackStatus,
-        position: Duration,
-        metadata: Option<Metadata>,
-    ) -> Progress {
-        Progress {
-            metadata,
-            playback_status,
-            instant: Instant::now(),
-            position,
+    pub fn current_position(&self) -> Duration {
+        if self.playback_status == PlaybackStatus::Playing {
+            self.position_snapshot.position + (Instant::now() - self.position_snapshot.instant)
+        } else {
+            self.position_snapshot.position
         }
-    }
-
-    pub fn metadata(&self) -> &Option<Metadata> {
-        &self.metadata
-    }
-
-    pub fn take_metadata(self) -> Option<Metadata> {
-        self.metadata
-    }
-
-    pub fn playback_status(&self) -> PlaybackStatus {
-        self.playback_status
-    }
-
-    pub fn instant(&self) -> Instant {
-        self.instant
-    }
-
-    pub fn position(&self) -> Duration {
-        self.position
     }
 }
 
@@ -123,7 +109,7 @@ where
     for<'b> T: dbus::arg::Get<'b>,
 {
     Ok(p.get("org.mpris.MediaPlayer2.Player", name).unwrap())
-        // .map_err(|e| e.to_string())
+    // .map_err(|e| e.to_string())
 }
 
 pub fn query_player_position(p: &ConnectionProxy) -> Result<Duration, String> {
@@ -215,10 +201,9 @@ pub fn query_progress(p: &ConnectionProxy) -> Result<Progress, String> {
         None
     };
     Ok(Progress {
-        metadata,
         playback_status,
-        instant,
-        position,
+        position_snapshot: PositionSnapshot { position, instant },
+        metadata,
     })
 }
 
@@ -356,9 +341,10 @@ pub fn get_connection_proxy<'a>(
 }
 
 fn get_mediaplayer2_seeked_handler(
-    sender: Sender<Event>,
+    sender: Sender<TimedEvent>,
 ) -> impl Fn(MediaPlayer2SeekedHappened, &Connection) -> bool {
     move |e: MediaPlayer2SeekedHappened, _: &Connection| {
+        let instant = Instant::now();
         debug!("Seek happened: {:?}", e);
         if e.position_us < 0 {
             panic!(
@@ -367,8 +353,11 @@ fn get_mediaplayer2_seeked_handler(
             );
         }
         sender
-            .send(Event::Seeked {
-                position: Duration::from_micros(e.position_us as u64),
+            .send(TimedEvent {
+                instant,
+                event: Event::Seeked {
+                    position: Duration::from_micros(e.position_us as u64),
+                },
             })
             .unwrap();
         true
@@ -376,9 +365,10 @@ fn get_mediaplayer2_seeked_handler(
 }
 
 fn get_dbus_properties_changed_handler(
-    sender: Sender<Event>,
+    sender: Sender<TimedEvent>,
 ) -> impl Fn(DbusPropertiesChangedHappened, &Connection) -> bool {
     move |e: DbusPropertiesChangedHappened, _: &Connection| {
+        let instant = Instant::now();
         debug!("DBus.Properties happened: {:?}", e);
         if e.interface_name == "org.mpris.MediaPlayer2.Player" {
             for (k, v) in &e.changed_properties {
@@ -387,16 +377,24 @@ fn get_dbus_properties_changed_handler(
                         let playback_status = v.as_str().unwrap();
                         debug!("playback_status = {:?}", playback_status);
                         sender
-                            .send(Event::PlaybackStatusChange(parse_playback_status(
-                                &playback_status,
-                            )))
+                            .send(TimedEvent {
+                                instant,
+                                event: Event::PlaybackStatusChange(parse_playback_status(
+                                    &playback_status,
+                                )),
+                            })
                             .unwrap();
                     }
                     "Metadata" => {
                         let metadata_map = get_message_item_dict(v);
                         debug!("metadata_map = {:?}", metadata_map);
                         let metadata = parse_player_metadata(metadata_map).unwrap();
-                        sender.send(Event::MetadataChange(metadata)).unwrap();
+                        sender
+                            .send(TimedEvent {
+                                instant,
+                                event: Event::MetadataChange(metadata),
+                            })
+                            .unwrap();
                     }
                     _ => {
                         warn!("Unknown PropertiesChanged event:");
@@ -416,15 +414,26 @@ fn get_dbus_properties_changed_handler(
 }
 
 fn get_dbus_name_owned_changed_handler(
-    sender: Sender<Event>,
+    sender: Sender<TimedEvent>,
     player_bus: String,
 ) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
     move |e: DbusNameOwnedChanged, _: &Connection| {
+        let instant = Instant::now();
         debug!("DbusNameOwnedChanged happened: {:?}", e);
         if e.name == player_bus && e.old_owner.is_empty() {
-            sender.send(Event::PlayerShutDown).unwrap();
+            sender
+                .send(TimedEvent {
+                    instant,
+                    event: Event::PlayerShutDown,
+                })
+                .unwrap();
         } else if e.name == player_bus && e.new_owner.is_empty() {
-            sender.send(Event::PlayerStarted).unwrap();
+            sender
+                .send(TimedEvent {
+                    instant,
+                    event: Event::PlayerStarted,
+                })
+                .unwrap();
         }
         true
     }
@@ -433,7 +442,7 @@ fn get_dbus_name_owned_changed_handler(
 pub fn subscribe<'a>(
     c: &'a Connection,
     player: &str,
-    sender: &Sender<Event>,
+    sender: &Sender<TimedEvent>,
 ) -> Result<Option<String>, String> {
     let all_player_buses = query_all_player_buses(&c)?;
 
@@ -465,7 +474,7 @@ pub fn subscribe<'a>(
 pub fn subscribe_to_player_start_stop<'a>(
     c: &'a Connection,
     player: &str,
-    sender: &Sender<Event>,
+    sender: &Sender<TimedEvent>,
 ) -> Result<(), String> {
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
 

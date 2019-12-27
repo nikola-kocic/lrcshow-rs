@@ -1,6 +1,7 @@
 mod lrc;
 mod player;
 
+use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,9 @@ use log::{debug, error, info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use structopt::StructOpt;
 
-use crate::player::{get_connection_proxy, Event, PlaybackStatus, Progress};
+use crate::player::{
+    get_connection_proxy, Event, PlaybackStatus, PositionSnapshot, Progress, TimedEvent,
+};
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -32,6 +35,7 @@ struct Opt {
     player: String,
 }
 
+#[derive(Clone, Debug)]
 struct LyricsTiming {
     pub time: Duration,
     pub line_index: i32,           // index of line
@@ -75,7 +79,7 @@ impl<'a> LrcTimedTextState<'a> {
         let mut current = None;
         let mut next = iter.next();
 
-        let v = progress.position() + (Instant::now() - progress.instant());
+        let v = progress.current_position();
 
         while let Some(timing) = next {
             if timing.time > v {
@@ -93,7 +97,7 @@ impl<'a> LrcTimedTextState<'a> {
 
     fn on_new_progress(&mut self, progress: &Progress) -> Option<(Duration, &'a LyricsTiming)> {
         if let Some(timed_text) = self.next {
-            let current_duration = progress.position() + (Instant::now() - progress.instant());
+            let current_duration = progress.current_position();
             if current_duration >= (timed_text.time - (REFRESH_EVERY / 2)) {
                 self.current = Some(timed_text);
                 self.next = self.iter.next();
@@ -170,7 +174,7 @@ fn create_watcher(
 }
 
 fn get_lrc_filepath(progress: &Progress) -> Option<PathBuf> {
-    if let Some(metadata) = progress.metadata() {
+    if let Some(metadata) = &progress.metadata {
         let mut lrc_filepath = metadata.file_path().clone();
         lrc_filepath.set_extension("lrc");
         if lrc_filepath.is_file() {
@@ -190,7 +194,7 @@ fn format_duration(duration: &Duration) -> String {
     format!("{:02}:{:05.2}", minutes, seconds)
 }
 
-fn read_events(c: &mut Connection, receiver: &Receiver<Event>) -> Option<Vec<Event>> {
+fn read_events(c: &mut Connection, receiver: &Receiver<TimedEvent>) -> Option<Vec<TimedEvent>> {
     let mut v = Vec::new();
     c.process(REFRESH_EVERY).unwrap();
     loop {
@@ -205,10 +209,12 @@ fn read_events(c: &mut Connection, receiver: &Receiver<Event>) -> Option<Vec<Eve
 
 fn run_dbus_server(
     active_lyrics_lines: Arc<Mutex<Option<Vec<String>>>>,
+    current_timing: Arc<Mutex<Option<LyricsTiming>>>,
 ) -> Result<(), dbus::Error> {
     let mut c = Connection::new_session().unwrap();
     c.request_name("com.github.nikola_kocic.lrcshow_rs", false, true, false)?;
     let f = Factory::new_fn::<()>();
+
     let tree = f.tree(()).add(
         f.object_path("/com/github/nikola_kocic/lrcshow_rs/Lyrics", ())
             .introspectable()
@@ -224,6 +230,25 @@ fn run_dbus_server(
                                 .append1(v.as_ref().map(|x| x.as_slice()).unwrap_or(&[]))])
                         })
                         .outarg::<(&str,), _>("reply"),
+                    )
+                    .add_m(
+                        f.method("GetCurrentLyricsPosition", (), move |m| {
+                            let v = current_timing.lock().unwrap();
+                            debug!("GetCurrentLyricsPosition called");
+                            Ok(vec![m.msg.method_return().append1(
+                                v.as_ref()
+                                    .map(|x| {
+                                        (
+                                            x.line_index,
+                                            x.line_char_from_index,
+                                            x.line_char_to_index,
+                                            x.time.as_millis().try_into().unwrap(),
+                                        )
+                                    })
+                                    .unwrap_or((-1, -1, -1, -1)),
+                            )])
+                        })
+                        .outarg::<(i32, i32, i32, i32), _>("reply"),
                     ),
             ),
     );
@@ -237,33 +262,54 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let mut c = Connection::new_session().unwrap();
 
     let active_lyrics_lines = Arc::new(Mutex::new(None));
-    let active_lyrics_lines_clone = active_lyrics_lines.clone();
-    thread::spawn(move || {
-        run_dbus_server(active_lyrics_lines_clone).unwrap();
-    });
+    let current_timing: Arc<Mutex<Option<LyricsTiming>>> = Arc::new(Mutex::new(None));
+    {
+        let active_lyrics_lines_clone = active_lyrics_lines.clone();
+        let current_timing_clone = current_timing.clone();
+        thread::spawn(move || {
+            run_dbus_server(active_lyrics_lines_clone, current_timing_clone).unwrap();
+        });
+    }
 
-    let on_active_lyrics_segment_changed = |timing: &LyricsTiming, c: &Connection| {
+    let on_active_lyrics_segment_changed = |timing: Option<LyricsTiming>, c: &Connection| {
         let mut s = Message::new_signal(
             "/com/github/nikola_kocic/lrcshow_rs/Daemon",
             "com.github.nikola_kocic.lrcshow_rs.Daemon",
             "ActiveLyricsSegmentChanged",
         )
         .unwrap();
-        s = s.append3(
-            timing.line_index,
-            timing.line_char_from_index,
-            timing.line_char_to_index,
-        );
+        let mut ia = dbus::arg::IterAppend::new(&mut s);
+        if let Some(timing) = &timing {
+            ia.append(timing.line_index);
+            ia.append(timing.line_char_from_index);
+            ia.append(timing.line_char_to_index);
+            ia.append::<i32>(timing.time.as_millis().try_into().unwrap());
+        } else {
+            ia.append(-1);
+            ia.append(-1);
+            ia.append(-1);
+            ia.append(-1);
+        }
+
+        {
+            *current_timing.lock().unwrap() = timing;
+        }
+
         use dbus::channel::Sender;
         c.send(s).unwrap();
 
-        info!(
-            "ActiveLyricsSegmentChanged {}: {} - {}",
-            timing.line_index, timing.line_char_from_index, timing.line_char_to_index
-        );
+        // if let Some(timing) = &timing {
+        //     info!(
+        //         "ActiveLyricsSegmentChanged {}: {} - {}",
+        //         timing.line_index, timing.line_char_from_index, timing.line_char_to_index
+        //     );
+        // }
     };
 
-    let on_lyrics_changed = |c: &Connection| {
+    let on_lyrics_changed = |lines: Option<Vec<String>>, c: &Connection| {
+        {
+            *active_lyrics_lines.lock().unwrap() = lines;
+        }
         let s = Message::new_signal(
             "/com/github/nikola_kocic/lrcshow_rs/Daemon",
             "com.github.nikola_kocic.lrcshow_rs.Daemon",
@@ -276,12 +322,12 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         info!("ActiveLyricsChanged");
     };
 
-    let (sender, receiver) = channel::<Event>();
+    let (sender, receiver) = channel::<TimedEvent>();
     player::subscribe_to_player_start_stop(&c, &player, &sender).unwrap();
     let mut player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
 
     let mut lrc = None;
-    let mut lrc_state = None;
+    let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut progress: Option<Progress> = None;
     let mut init = player_owner_name.is_some();
 
@@ -289,66 +335,80 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
         if init {
             init = false;
             player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
-            progress = Some(player::query_progress(&get_connection_proxy(
-                &c,
-                &player_owner_name.clone().unwrap(),
-            ))
-            .unwrap());  // TODO: This is often crashing on player restart
+            progress = Some(
+                player::query_progress(&get_connection_proxy(
+                    &c,
+                    &player_owner_name.clone().unwrap(),
+                ))
+                .unwrap(),
+            ); // TODO: This is often crashing on player restart
             debug!("progress = {:?}", progress);
 
             if let Some(progress) = progress.as_ref() {
-                if let Some(filepath) =
-                    get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone())
+                if let Some(filepath) = get_lrc_filepath(&progress).or_else(|| lrc_filepath.clone())
                 {
                     lrc = LrcManager::new(filepath);
                     lrc_state = lrc.as_ref().map(|l| l.new_timed_text_state(&progress));
                 }
-                {
-                    let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-                    *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
-                    on_lyrics_changed(&c);
-                }
+                on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
             }
         }
 
-        let events = read_events(&mut c, &receiver)?;
-        let received_events = !events.is_empty();
-        for event in events {
-            debug!("{:?}", event);
+        let timed_events = read_events(&mut c, &receiver)?;
+        let received_events = !timed_events.is_empty();
+        for timed_event in timed_events {
+            debug!("{:?}", timed_event);
+            let instant = timed_event.instant;
+            let event = timed_event.event;
+
             match event {
                 Event::Seeked { position } => {
-                    progress = progress
-                        .map(|p| Progress::new(p.playback_status(), position, p.take_metadata()));
+                    if let Some(ref mut p) = progress {
+                        p.position_snapshot = PositionSnapshot { position, instant };
+                    }
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Playing) => {
-                    // position was already queryied on pause and seek
-                    progress = progress.map(|p| {
-                        Progress::new(PlaybackStatus::Playing, p.position(), p.take_metadata())
+                    // position was already queried on pause and seek
+                    progress = progress.map(|p| Progress {
+                        playback_status: PlaybackStatus::Playing,
+                        position_snapshot: PositionSnapshot {
+                            position: p.position_snapshot.position,
+                            instant,
+                        },
+                        metadata: p.metadata,
                     });
                 }
                 Event::PlaybackStatusChange(PlaybackStatus::Stopped) => {
-                    progress = Some(Progress::new(
-                        PlaybackStatus::Stopped,
-                        Duration::from_millis(0),
-                        None,
-                    ));
-                }
-                Event::PlaybackStatusChange(PlaybackStatus::Paused) => {
-                    progress = progress.as_ref().map(|p| {
-                        Progress::new(
-                            PlaybackStatus::Paused,
-                            player::query_player_position(&get_connection_proxy(
-                                &c,
-                                &player_owner_name.clone().unwrap(),
-                            ))
-                            .unwrap(),
-                            p.metadata().clone(),
-                        )
+                    progress = Some(Progress {
+                        playback_status: PlaybackStatus::Stopped,
+                        position_snapshot: PositionSnapshot {
+                            position: Duration::from_millis(0),
+                            instant,
+                        },
+                        metadata: None,
                     });
                 }
+                Event::PlaybackStatusChange(PlaybackStatus::Paused) => {
+                    if let Some(p) = progress {
+                        progress = Some(Progress {
+                            playback_status: PlaybackStatus::Paused,
+                            position_snapshot: PositionSnapshot {
+                                position: player::query_player_position(&get_connection_proxy(
+                                    &c,
+                                    &player_owner_name.clone().unwrap(),
+                                ))
+                                .unwrap(),
+                                instant: Instant::now(),
+                            },
+                            metadata: p.metadata,
+                        });
+                    }
+                }
                 Event::MetadataChange(metadata) => {
-                    progress = progress
-                        .map(|p| Progress::new(p.playback_status(), p.position(), metadata));
+                    if let Some(ref mut p) = progress {
+                        p.metadata = metadata;
+                    }
+                    let mut timing = None;
                     match progress
                         .as_ref()
                         .and_then(|p| get_lrc_filepath(&p))
@@ -359,27 +419,20 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                             lrc_state = lrc.as_ref().and_then(|l| {
                                 progress.as_ref().map(|p| l.new_timed_text_state(&p))
                             });
+                            timing = Some(LyricsTiming {
+                                time: Duration::from_secs(0),
+                                line_index: 0,
+                                line_char_from_index: 0,
+                                line_char_to_index: 0,
+                            });
                         }
                         None => {
                             lrc = None;
                             lrc_state = None;
                         }
                     }
-                    {
-                        let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-                        *active_lyrics_lines = lrc.as_ref().map(|l| l.lyrics.lines.clone());
-                        on_lyrics_changed(&c);
-
-                        on_active_lyrics_segment_changed(
-                            &LyricsTiming {
-                                time: Duration::from_secs(0),
-                                line_index: 0,
-                                line_char_from_index: 0,
-                                line_char_to_index: 0,
-                            },
-                            &c,
-                        );
-                    }
+                    on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
+                    on_active_lyrics_segment_changed(timing, &c,);
                 }
                 Event::PlayerShutDown => {
                     // return Some(());
@@ -396,9 +449,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 
         if let Some(new_lrc) = lrc.as_ref().and_then(|l| l.maybe_recreate()) {
             {
-                let mut active_lyrics_lines = active_lyrics_lines.lock().unwrap();
-                *active_lyrics_lines = Some(new_lrc.lyrics.lines.clone());
-                on_lyrics_changed(&c);
+                on_lyrics_changed(Some(new_lrc.lyrics.lines.clone()), &c);
             }
             lrc = Some(new_lrc);
             lrc_state = lrc
@@ -412,14 +463,14 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 .as_ref()
                 .and_then(|l| progress.as_ref().map(|p| l.new_timed_text_state(&p)));
             if let Some(timed_text) = lrc_state.as_ref().and_then(|l| l.current) {
-                on_active_lyrics_segment_changed(timed_text, &c);
+                on_active_lyrics_segment_changed(Some(timed_text.clone()), &c);
             }
-        } else if progress.as_ref().map(|p| p.playback_status()) == Some(PlaybackStatus::Playing) {
+        } else if progress.as_ref().map(|p| p.playback_status) == Some(PlaybackStatus::Playing) {
             if let Some((duration, timed_text)) = lrc_state
                 .as_mut()
                 .and_then(|l| progress.as_ref().and_then(|p| l.on_new_progress(&p)))
             {
-                on_active_lyrics_segment_changed(timed_text, &c);
+                on_active_lyrics_segment_changed(Some(timed_text.clone()), &c);
                 debug!(
                     "Matched lyrics line at time {}, player time {}",
                     format_duration(&timed_text.time),
