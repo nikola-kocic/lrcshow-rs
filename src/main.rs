@@ -67,7 +67,7 @@ impl<'a> LrcTimedTextState<'a> {
         }
     }
 
-    fn on_new_progress(&mut self, current_position: Duration) -> Option<&'a LyricsTiming> {
+    fn on_position_advanced(&mut self, current_position: Duration) -> Option<&'a LyricsTiming> {
         if let Some(timed_text) = self.next {
             if current_position >= (timed_text.time - (REFRESH_EVERY / 2)) {
                 self.current = Some(timed_text);
@@ -173,7 +173,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     }
                     Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
                         LrcManager::change_watched_path(
-                            get_lrc_filepath(metadata.clone()),
+                            get_lrc_filepath(metadata.clone()).or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
                         if let Some(ref mut p) = player_state {
@@ -181,7 +181,6 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         }
                     }
                     Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
-                        // return Some(());
                         LrcManager::change_watched_path(None, &lrc_manager_sender);
                         player_state = None;
                         player_owner_name = None;
@@ -198,7 +197,8 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         LrcManager::change_watched_path(
                             get_lrc_filepath(
                                 player_state.as_ref().and_then(|p| p.metadata.clone()),
-                            ),
+                            )
+                            .or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
                     }
@@ -224,12 +224,12 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
             server.on_active_lyrics_segment_changed(timed_text.cloned(), &c);
         } else if let Some(ref player_state) = player_state {
             if player_state.playback_status == PlaybackStatus::Playing {
-                if let Some(new_timed_text) = lrc_state
+                let new_timed_text = lrc_state
                     .as_mut()
-                    .and_then(|l| l.on_new_progress(player_state.current_position()))
+                    .and_then(|l| l.on_position_advanced(player_state.current_position()));
                 // None also means that current lyrics segment should not change
-                {
-                    server.on_active_lyrics_segment_changed(Some(new_timed_text.clone()), &c);
+                if new_timed_text.is_some() {
+                    server.on_active_lyrics_segment_changed(new_timed_text.cloned(), &c);
                 }
             }
         }
