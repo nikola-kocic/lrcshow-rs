@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::lrc::Lyrics;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum PlaybackStatus {
     Playing,
@@ -56,12 +58,30 @@ pub enum PlayerEvent {
 }
 
 #[derive(Debug)]
+pub enum LyricsEvent {
+    LyricsChanged {
+        lyrics: Option<Lyrics>,
+        file_path: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug)]
 pub enum Event {
     PlayerEvent(PlayerEvent),
+    LyricsEvent(LyricsEvent),
 }
 
 #[derive(Debug)]
 pub struct TimedEvent {
     pub instant: Instant,
     pub event: Event,
+}
+
+impl TimedEvent {
+    pub fn new(event: Event) -> Self {
+        Self {
+            instant: Instant::now(),
+            event,
+        }
+    }
 }

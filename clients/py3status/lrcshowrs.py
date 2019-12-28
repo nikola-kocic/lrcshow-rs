@@ -47,7 +47,7 @@ class SingleLineFormatter:
         active = ""
         post_active = ""
         text_after = ""
-        if len(self.single_line) == 0:
+        if len(self.single_line) == 0 or self.lrc_info.line_index is None:
             return (text_before, pre_active, active, post_active, text_after)
 
         active_line_start_index = self.line_index_to_single_line_index_mapping[self.lrc_info.line_index]
@@ -272,13 +272,16 @@ class SingleLineTerminalPrinter:
         self.lyrics_receiver.start_loop()
 
     def update(self):
-        text_before, pre_active, active, post_active, text_after = self.lrc_formatter.get_as_single_line()
-        text_len = len(text_before) + len(pre_active) + len(active) + len(post_active) + len(text_after)
-        new_line = (
-            text_before + bcolors.OKBLUE + pre_active +
-            bcolors.BOLD + active + bcolors.ENDC +
-            bcolors.OKBLUE + post_active + bcolors.ENDC + text_after
-        )
+        text_len = 0
+        new_line = ""
+        if self.lrc_info.line_index is not None:
+            text_before, pre_active, active, post_active, text_after = self.lrc_formatter.get_as_single_line()
+            text_len = len(text_before) + len(pre_active) + len(active) + len(post_active) + len(text_after)
+            new_line = (
+                text_before + bcolors.OKBLUE + pre_active +
+                bcolors.BOLD + active + bcolors.ENDC +
+                bcolors.OKBLUE + post_active + bcolors.ENDC + text_after
+            )
         sys.stdout.write("\r{}{}".format(new_line, " " * (120 - text_len)))
         sys.stdout.flush()
 

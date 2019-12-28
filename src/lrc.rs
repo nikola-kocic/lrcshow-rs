@@ -201,6 +201,7 @@ pub struct LyricsTiming {
     pub line_char_to_index: i32,   // to this character in line
 }
 
+#[derive(Debug)]
 pub struct Lyrics {
     pub lines: Vec<String>,
     pub timings: Vec<LyricsTiming>,

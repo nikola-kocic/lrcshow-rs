@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Sender};
+use std::path::PathBuf;
+use std::sync::mpsc::channel;
+use std::thread;
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -7,71 +8,116 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 
-use crate::events::Metadata;
+use crate::events::{Event, LyricsEvent, Metadata, TimedEvent};
 use crate::lrc::{parse_lrc_file, Lyrics};
 
-pub struct LrcManager {
-    pub lyrics: Lyrics,
-    rx: std::sync::mpsc::Receiver<notify::DebouncedEvent>,
-    _watcher: RecommendedWatcher,
-    lrc_filepath: PathBuf,
+pub enum InputEvents {
+    ChangePath(Option<PathBuf>),
+    FileChanged(PathBuf),
 }
 
-fn create_watcher(
-    tx: Sender<notify::DebouncedEvent>,
-    folder_path: &Path,
-) -> Result<RecommendedWatcher, String> {
-    RecommendedWatcher::new(tx, Duration::from_millis(100))
-        .and_then(|mut watcher| {
-            watcher.watch(folder_path, RecursiveMode::Recursive)?;
-            Ok(watcher)
-        })
-        .map_err(|e| e.to_string())
+pub struct LrcManager {
+    tx: std::sync::mpsc::Sender<InputEvents>,
+    rx: std::sync::mpsc::Receiver<InputEvents>,
+    lyric_event_tx: std::sync::mpsc::Sender<TimedEvent>,
+    watcher: RecommendedWatcher,
+    lrc_filepath: Option<PathBuf>,
 }
 
 impl LrcManager {
-    pub fn new(lrc_filepath: PathBuf) -> Option<Self> {
+    pub fn change_watched_path(
+        file_path: Option<PathBuf>,
+        sender: &std::sync::mpsc::Sender<InputEvents>,
+    ) {
+        sender.send(InputEvents::ChangePath(file_path)).unwrap();
+    }
+
+    pub fn clone_sender(&self) -> std::sync::mpsc::Sender<InputEvents> {
+        self.tx.clone()
+    }
+
+    pub fn new(lyric_event_tx: std::sync::mpsc::Sender<TimedEvent>) -> Self {
+        let (watcher_tx, watcher_rx) = channel();
+        let watcher = RecommendedWatcher::new(watcher_tx, Duration::from_millis(100)).unwrap();
+
         let (tx, rx) = channel();
-        let watcher = create_watcher(tx, lrc_filepath.parent()?)
-            .map_err(|e| error!("Creating watched failed: {}", e))
-            .ok()?;
-        let lrc_file = parse_lrc_file(&lrc_filepath)
-            .map_err(|e| error!("Parsing lrc file failed: {}", e))
-            .ok()?;
-        debug!("lrc_file = {:?}", lrc_file);
-        let lyrics = Lyrics::new(lrc_file);
-        Some(LrcManager {
-            lyrics,
-            rx,
-            _watcher: watcher,
-            lrc_filepath,
-        })
-    }
-
-    pub fn should_recreate(&self) -> bool {
-        self.rx
-            .try_recv()
-            .ok()
-            .map(|event| match event {
-                notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
-                    path == self.lrc_filepath
+        {
+            let tx_clone = tx.clone();
+            thread::spawn(move || loop {
+                match watcher_rx.recv() {
+                    Ok(event) => match event {
+                        notify::DebouncedEvent::Create(path)
+                        | notify::DebouncedEvent::Write(path) => {
+                            tx_clone.send(InputEvents::FileChanged(path)).unwrap();
+                        }
+                        _ => {}
+                    },
+                    Err(_) => {
+                        return;
+                    }
                 }
-                _ => false,
-            })
-            .unwrap_or(false)
+            });
+        }
+        Self {
+            tx,
+            rx,
+            lyric_event_tx,
+            watcher,
+            lrc_filepath: None,
+        }
     }
 
-    pub fn maybe_recreate(&self) -> Option<LrcManager> {
-        if self.should_recreate() {
-            info!("Reloading lyrics");
-            LrcManager::new(self.lrc_filepath.clone())
-        } else {
-            None
+    fn on_file_changed(&self, changed_file_path: Option<PathBuf>) {
+        if changed_file_path == self.lrc_filepath {
+            let mut lyrics = None;
+            if let Some(file_path) = &self.lrc_filepath {
+                let lrc_file = parse_lrc_file(&file_path)
+                    .map_err(|e| error!("Parsing lrc file failed: {}", e))
+                    .ok();
+                debug!("lrc_file = {:?}", lrc_file);
+                lyrics = lrc_file.map(Lyrics::new);
+            }
+            self.lyric_event_tx
+                .send(TimedEvent::new(Event::LyricsEvent(
+                    LyricsEvent::LyricsChanged {
+                        lyrics,
+                        file_path: changed_file_path,
+                    },
+                )))
+                .unwrap();
         }
+    }
+
+    pub fn run_sync(&mut self) -> Result<(), ()> {
+        loop {
+            match self.rx.recv().map_err(|_| ())? {
+                InputEvents::FileChanged(file_path) => self.on_file_changed(Some(file_path)),
+                InputEvents::ChangePath(file_path) => {
+                    if let Some(old_file_path) = &self.lrc_filepath {
+                        let old_folder_path = old_file_path.parent().unwrap();
+                        self.watcher.unwatch(old_folder_path).unwrap();
+                    }
+                    self.lrc_filepath = file_path.clone();
+                    if let Some(new_file_path) = &self.lrc_filepath {
+                        let new_folder_path = new_file_path.parent().unwrap();
+                        self.watcher
+                            .watch(new_folder_path, RecursiveMode::Recursive)
+                            .unwrap();
+                    }
+                    self.on_file_changed(file_path);
+                }
+            }
+        }
+    }
+
+    pub fn run_async(mut self) {
+        thread::spawn(move || {
+            self.run_sync().unwrap();
+        });
     }
 }
 
-pub fn get_lrc_filepath(metadata: &Option<Metadata>) -> Option<PathBuf> {
+pub fn get_lrc_filepath(metadata: Option<Metadata>) -> Option<PathBuf> {
     if let Some(metadata) = metadata {
         let mut lrc_filepath = metadata.file_path.clone();
         lrc_filepath.set_extension("lrc");

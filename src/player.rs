@@ -419,15 +419,13 @@ impl PlayerNotifications {
     }
 
     fn run_sync(&self, player: String) {
-        let (internal_sender, internal_receiver) = channel::<PlayerLifetimeEvent>();
+        let (tx, rx) = channel::<PlayerLifetimeEvent>();
         let mut c = Connection::new_session().unwrap();
-        subscribe_to_player_start_stop(&c, &player, &internal_sender).unwrap();
-        internal_sender
-            .send(PlayerLifetimeEvent::PlayerStarted)
-            .unwrap();
+        subscribe_to_player_start_stop(&c, &player, &tx).unwrap();
+        tx.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
         loop {
             loop {
-                match internal_receiver.try_recv() {
+                match rx.try_recv() {
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
                     Ok(PlayerLifetimeEvent::PlayerStarted) => {
