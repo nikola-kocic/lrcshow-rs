@@ -111,6 +111,7 @@ class Py3status:
     def __init__(self):
         self.update_thread = None
         self.lyrics_receiver = None
+        self.max_width = 110
 
     def post_config_hook(self):
         log = lambda t: None
@@ -131,12 +132,43 @@ class Py3status:
         line_index = self.lyrics_receiver.line_index
         line_char_from_index = self.lyrics_receiver.line_char_from_index
         line_char_to_index = self.lyrics_receiver.line_char_to_index
-
         active_line = lyrics_text[line_index]
-        previous_line = (lyrics_text[line_index - 1] + " | "
-                         if line_index > 0 else "")
-        next_line = (" | " + lyrics_text[line_index + 1]
-                     if (line_index + 1 < len(lyrics_text)) else "")
+
+        if len(active_line) >= self.max_width:
+            text_before = ""
+            text_after = ""
+        else:
+            text_after_index = line_index + 1
+            text_after = ""
+            def maybe_append_after():
+                nonlocal text_after_index
+                nonlocal text_after
+                while text_after_index < len(lyrics_text):
+                    maybe_append = "|" + lyrics_text[text_after_index]
+                    if len(active_line) + len(text_before) + len(text_after) + len(maybe_append) > self.max_width:
+                        return False
+                    text_after += maybe_append
+                    text_after_index += 1
+                    if len(maybe_append) > 10:
+                        return True
+
+            text_before_index = line_index - 1
+            text_before = ""
+            def maybe_append_before():
+                nonlocal text_before_index
+                nonlocal text_before
+                while text_before_index > 0 and text_before_index < len(lyrics_text):
+                    maybe_prepend = lyrics_text[text_before_index] + "|"
+                    if len(active_line) + len(text_before) + len(text_after) + len(maybe_prepend) > self.max_width:
+                        return False
+                    text_before = maybe_prepend + text_before
+                    text_before_index -= 1
+                    if len(maybe_prepend) > 10:
+                        return True
+
+            while len(active_line) + len(text_before) + len(text_after) < self.max_width:
+                if not maybe_append_after() or not maybe_append_before():
+                    break
 
         if line_char_to_index is not None and line_char_from_index is not None:
             pre_active = active_line[0:line_char_from_index]
@@ -148,11 +180,11 @@ class Py3status:
             post_active = ""
 
         return [
-            {'full_text': previous_line, 'color': '#808080'},
+            {'full_text': text_before, 'color': '#808080'},
             {'full_text': pre_active},
             {'full_text': active, 'color': '#ff0000'},
             {'full_text': post_active},
-            {'full_text': next_line, 'color': '#808080'},
+            {'full_text': text_after, 'color': '#808080'},
         ]
 
     def lrcshowrs(self):
