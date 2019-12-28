@@ -65,11 +65,3 @@ pub struct TimedEvent {
     pub instant: Instant,
     pub event: Event,
 }
-
-#[derive(Clone, Debug)]
-pub struct LyricsTiming {
-    pub time: Duration,
-    pub line_index: i32,           // index of line
-    pub line_char_from_index: i32, // from this character in line
-    pub line_char_to_index: i32,   // to this character in line
-}

@@ -192,3 +192,45 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
         timed_texts_lines,
     })
 }
+
+#[derive(Clone, Debug)]
+pub struct LyricsTiming {
+    pub time: Duration,
+    pub line_index: i32,           // index of line
+    pub line_char_from_index: i32, // from this character in line
+    pub line_char_to_index: i32,   // to this character in line
+}
+
+pub struct Lyrics {
+    pub lines: Vec<String>,
+    pub timings: Vec<LyricsTiming>,
+}
+
+impl Lyrics {
+    pub fn new(lrc_file: LrcFile) -> Self {
+        let mut lines = Vec::new();
+        let mut timings = Vec::new();
+
+        if !lrc_file.timed_texts_lines.is_empty() {
+            timings.push(LyricsTiming {
+                time: Duration::from_secs(0),
+                line_index: 0,
+                line_char_from_index: 0,
+                line_char_to_index: 0,
+            });
+        }
+
+        for (line_index, timed_text_line) in (0i32..).zip(lrc_file.timed_texts_lines) {
+            lines.push(timed_text_line.text);
+            for timing in timed_text_line.timings {
+                timings.push(LyricsTiming {
+                    time: timing.time,
+                    line_index,
+                    line_char_from_index: timing.line_char_from_index,
+                    line_char_to_index: timing.line_char_to_index,
+                })
+            }
+        }
+        Lyrics { lines, timings }
+    }
+}
