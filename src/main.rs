@@ -1,21 +1,24 @@
 mod events;
 mod lrc;
+mod lrc_file_manager;
 mod player;
 mod server;
 
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 use dbus::blocking::Connection;
-use log::{debug, error, info, warn};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use structopt::StructOpt;
 
+#[allow(unused_imports)]
+use log::{debug, error, info, warn};
+
 use crate::events::{
-    Event, LyricsTiming, Metadata, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot,
-    TimedEvent,
+    Event, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
 };
+use crate::lrc::{Lyrics, LyricsTiming};
+use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
 use crate::player::get_connection_proxy;
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
@@ -32,40 +35,6 @@ struct Opt {
     /// Player to use
     #[structopt(short = "p", long)]
     player: String,
-}
-
-struct Lyrics {
-    lines: Vec<String>,
-    timings: Vec<LyricsTiming>,
-}
-
-impl Lyrics {
-    fn new(lrc_file: lrc::LrcFile) -> Self {
-        let mut lines = Vec::new();
-        let mut timings = Vec::new();
-
-        if !lrc_file.timed_texts_lines.is_empty() {
-            timings.push(LyricsTiming {
-                time: Duration::from_secs(0),
-                line_index: 0,
-                line_char_from_index: 0,
-                line_char_to_index: 0,
-            });
-        }
-
-        for (line_index, timed_text_line) in (0i32..).zip(lrc_file.timed_texts_lines) {
-            lines.push(timed_text_line.text);
-            for timing in timed_text_line.timings {
-                timings.push(LyricsTiming {
-                    time: timing.time,
-                    line_index,
-                    line_char_from_index: timing.line_char_from_index,
-                    line_char_to_index: timing.line_char_to_index,
-                })
-            }
-        }
-        Lyrics { lines, timings }
-    }
 }
 
 struct LrcTimedTextState<'a> {
@@ -113,85 +82,6 @@ impl<'a> LrcTimedTextState<'a> {
         }
         None
     }
-}
-
-struct LrcManager {
-    lyrics: Lyrics,
-    rx: std::sync::mpsc::Receiver<notify::DebouncedEvent>,
-    _watcher: RecommendedWatcher,
-    lrc_filepath: PathBuf,
-}
-
-impl LrcManager {
-    fn create_watcher(
-        tx: Sender<notify::DebouncedEvent>,
-        folder_path: &Path,
-    ) -> Result<RecommendedWatcher, String> {
-        RecommendedWatcher::new(tx, Duration::from_millis(100))
-            .and_then(|mut watcher| {
-                watcher.watch(folder_path, RecursiveMode::Recursive)?;
-                Ok(watcher)
-            })
-            .map_err(|e| e.to_string())
-    }
-
-    fn new(lrc_filepath: PathBuf) -> Option<Self> {
-        let (tx, rx) = channel();
-        let watcher = Self::create_watcher(tx, lrc_filepath.parent()?)
-            .map_err(|e| error!("Creating watched failed: {}", e))
-            .ok()?;
-        let lrc_file = lrc::parse_lrc_file(&lrc_filepath)
-            .map_err(|e| error!("Parsing lrc file failed: {}", e))
-            .ok()?;
-        debug!("lrc_file = {:?}", lrc_file);
-        let lyrics = Lyrics::new(lrc_file);
-        Some(LrcManager {
-            lyrics,
-            rx,
-            _watcher: watcher,
-            lrc_filepath,
-        })
-    }
-
-    fn new_timed_text_state(&self, current_position: Duration) -> LrcTimedTextState {
-        LrcTimedTextState::new(&self.lyrics, current_position)
-    }
-
-    fn should_recreate(&self) -> bool {
-        self.rx
-            .try_recv()
-            .ok()
-            .map(|event| match event {
-                notify::DebouncedEvent::Create(path) | notify::DebouncedEvent::Write(path) => {
-                    path == self.lrc_filepath
-                }
-                _ => false,
-            })
-            .unwrap_or(false)
-    }
-
-    fn maybe_recreate(&self) -> Option<LrcManager> {
-        if self.should_recreate() {
-            info!("Reloading lyrics");
-            LrcManager::new(self.lrc_filepath.clone())
-        } else {
-            None
-        }
-    }
-}
-
-fn get_lrc_filepath(metadata: &Option<Metadata>) -> Option<PathBuf> {
-    if let Some(metadata) = metadata {
-        let mut lrc_filepath = metadata.file_path.clone();
-        lrc_filepath.set_extension("lrc");
-        if lrc_filepath.is_file() {
-            info!("Loading lyrics from {}", lrc_filepath.display());
-            return Some(lrc_filepath);
-        } else {
-            warn!("Lyrics not found for {}", metadata.file_path.display());
-        }
-    }
-    None
 }
 
 fn format_duration(duration: &Duration) -> String {
@@ -246,9 +136,9 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     get_lrc_filepath(&player_state.metadata).or_else(|| lrc_filepath.clone())
                 {
                     lrc = LrcManager::new(filepath);
-                    lrc_state = lrc
-                        .as_ref()
-                        .map(|l| l.new_timed_text_state(player_state.current_position()));
+                    lrc_state = lrc.as_ref().map(|l| {
+                        LrcTimedTextState::new(&l.lyrics, player_state.current_position())
+                    });
                 }
                 server.on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
                 let timed_text = lrc_state.as_ref().and_then(|l| l.current.cloned());
@@ -319,9 +209,9 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         Some(filepath) => {
                             lrc = LrcManager::new(filepath);
                             lrc_state = lrc.as_ref().and_then(|l| {
-                                player_state
-                                    .as_ref()
-                                    .map(|p| l.new_timed_text_state(p.current_position()))
+                                player_state.as_ref().map(|p| {
+                                    LrcTimedTextState::new(&l.lyrics, p.current_position())
+                                })
                             });
                             timing = Some(LyricsTiming {
                                 time: Duration::from_secs(0),
@@ -357,7 +247,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
             lrc_state = lrc.as_ref().and_then(|l| {
                 player_state
                     .as_ref()
-                    .map(|p| l.new_timed_text_state(p.current_position()))
+                    .map(|p| LrcTimedTextState::new(&l.lyrics, p.current_position()))
             });
         }
 
@@ -366,7 +256,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
             lrc_state = lrc.as_ref().and_then(|l| {
                 player_state
                     .as_ref()
-                    .map(|p| l.new_timed_text_state(p.current_position()))
+                    .map(|p| LrcTimedTextState::new(&l.lyrics, p.current_position()))
             });
             let timed_text = lrc_state.as_ref().and_then(|l| l.current);
             server.on_active_lyrics_segment_changed(timed_text.cloned(), &c);

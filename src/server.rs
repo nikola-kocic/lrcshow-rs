@@ -10,7 +10,7 @@ use dbus::Message;
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 
-use crate::events::LyricsTiming;
+use crate::lrc::LyricsTiming;
 
 pub struct Server {
     active_lyrics_lines: Arc<Mutex<Option<Vec<String>>>>,
