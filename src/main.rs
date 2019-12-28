@@ -5,7 +5,7 @@ mod player;
 mod server;
 
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 use dbus::blocking::Connection;
@@ -91,18 +91,6 @@ fn format_duration(duration: &Duration) -> String {
     format!("{:02}:{:05.2}", minutes, seconds)
 }
 
-fn read_events(receiver: &Receiver<TimedEvent>) -> Option<Vec<TimedEvent>> {
-    let mut v = Vec::new();
-    loop {
-        match receiver.recv_timeout(REFRESH_EVERY) {
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
-            Ok(event) => v.push(event),
-        }
-    }
-    Some(v)
-}
-
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let server = server::Server::new();
     server.run_async();
@@ -124,97 +112,105 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let mut lyrics: Option<Lyrics> = None;
 
     loop {
-        let timed_events = read_events(&receiver)?;
-        let received_events = !timed_events.is_empty();
-        for timed_event in timed_events {
-            debug!("{:?}", timed_event);
-            let instant = timed_event.instant;
-            let event = timed_event.event;
+        let mut received_events = false;
+        match receiver.recv_timeout(REFRESH_EVERY) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            Ok(timed_event) => {
+                debug!("{:?}", timed_event);
+                received_events = true;
+                let instant = timed_event.instant;
+                let event = timed_event.event;
 
-            match event {
-                Event::PlayerEvent(PlayerEvent::Seeked { position }) => {
-                    if let Some(ref mut ps) = player_state {
-                        ps.position_snapshot = PositionSnapshot { position, instant };
+                match event {
+                    Event::PlayerEvent(PlayerEvent::Seeked { position }) => {
+                        if let Some(ref mut ps) = player_state {
+                            ps.position_snapshot = PositionSnapshot { position, instant };
+                        }
                     }
-                }
-                Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(PlaybackStatus::Playing)) => {
-                    // position was already queried on pause and seek
-                    player_state = player_state.map(|p| PlayerState {
-                        playback_status: PlaybackStatus::Playing,
-                        position_snapshot: PositionSnapshot {
-                            position: p.position_snapshot.position,
-                            instant,
-                        },
-                        metadata: p.metadata,
-                    });
-                }
-                Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(PlaybackStatus::Stopped)) => {
-                    player_state = Some(PlayerState {
-                        playback_status: PlaybackStatus::Stopped,
-                        position_snapshot: PositionSnapshot {
-                            position: Duration::from_millis(0),
-                            instant,
-                        },
-                        metadata: None,
-                    });
-                }
-                Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(PlaybackStatus::Paused)) => {
-                    if let Some(p) = player_state {
-                        player_state = Some(PlayerState {
-                            playback_status: PlaybackStatus::Paused,
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
+                        PlaybackStatus::Playing,
+                    )) => {
+                        // position was already queried on pause and seek
+                        player_state = player_state.map(|p| PlayerState {
+                            playback_status: PlaybackStatus::Playing,
                             position_snapshot: PositionSnapshot {
-                                position: player::query_player_position(&get_connection_proxy(
-                                    &c,
-                                    &player_owner_name.clone().unwrap(),
-                                ))
-                                .unwrap(),
-                                instant: Instant::now(),
+                                position: p.position_snapshot.position,
+                                instant,
                             },
                             metadata: p.metadata,
                         });
                     }
-                }
-                Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
-                    LrcManager::change_watched_path(
-                        get_lrc_filepath(metadata.clone()),
-                        &lrc_manager_sender,
-                    );
-                    if let Some(ref mut p) = player_state {
-                        p.metadata = metadata;
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
+                        PlaybackStatus::Stopped,
+                    )) => {
+                        player_state = Some(PlayerState {
+                            playback_status: PlaybackStatus::Stopped,
+                            position_snapshot: PositionSnapshot {
+                                position: Duration::from_millis(0),
+                                instant,
+                            },
+                            metadata: None,
+                        });
+                    }
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
+                        PlaybackStatus::Paused,
+                    )) => {
+                        if let Some(p) = player_state {
+                            player_state = Some(PlayerState {
+                                playback_status: PlaybackStatus::Paused,
+                                position_snapshot: PositionSnapshot {
+                                    position: player::query_player_position(&get_connection_proxy(
+                                        &c,
+                                        &player_owner_name.clone().unwrap(),
+                                    ))
+                                    .unwrap(),
+                                    instant: Instant::now(),
+                                },
+                                metadata: p.metadata,
+                            });
+                        }
+                    }
+                    Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
+                        LrcManager::change_watched_path(
+                            get_lrc_filepath(metadata.clone()),
+                            &lrc_manager_sender,
+                        );
+                        if let Some(ref mut p) = player_state {
+                            p.metadata = metadata;
+                        }
+                    }
+                    Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
+                        // return Some(());
+                        LrcManager::change_watched_path(None, &lrc_manager_sender);
+                        player_state = None;
+                        player_owner_name = None;
+                    }
+                    Event::PlayerEvent(PlayerEvent::PlayerStarted {
+                        player_owner_name: n,
+                    }) => {
+                        player_state = Some(
+                            player::query_player_state(&get_connection_proxy(&c, &n.clone()))
+                                .unwrap(),
+                        ); // TODO: This is often crashing on player restart
+
+                        player_owner_name = Some(n);
+                        LrcManager::change_watched_path(
+                            get_lrc_filepath(
+                                player_state.as_ref().and_then(|p| p.metadata.clone()),
+                            ),
+                            &lrc_manager_sender,
+                        );
+                    }
+                    Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
+                        lrc_state = None; // will be asigned after event processing
+                        lyrics = l;
+                        server.on_lyrics_changed(lyrics.as_ref().map(|l| l.lines.clone()), &c);
                     }
                 }
-                Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
-                    // return Some(());
-                    LrcManager::change_watched_path(None, &lrc_manager_sender);
-                    player_state = None;
-                    player_owner_name = None;
-                }
-                Event::PlayerEvent(PlayerEvent::PlayerStarted {
-                    player_owner_name: n,
-                }) => {
-                    player_owner_name = Some(n);
 
-                    player_state = Some(
-                        player::query_player_state(&get_connection_proxy(
-                            &c,
-                            &player_owner_name.clone().unwrap(),
-                        ))
-                        .unwrap(),
-                    ); // TODO: This is often crashing on player restart
-
-                    LrcManager::change_watched_path(
-                        get_lrc_filepath(player_state.as_ref().and_then(|p| p.metadata.clone())),
-                        &lrc_manager_sender,
-                    );
-                }
-                Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
-                    lrc_state = None;  // will be asigned after event processing
-                    lyrics = l;
-                    server.on_lyrics_changed(lyrics.as_ref().map(|l| l.lines.clone()), &c);
-                }
+                debug!("player_state = {:?}", player_state);
             }
-
-            debug!("player_state = {:?}", player_state);
         }
 
         // Print new lyrics line, if needed
@@ -231,7 +227,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                 if let Some(new_timed_text) = lrc_state
                     .as_mut()
                     .and_then(|l| l.on_new_progress(player_state.current_position()))
-                    // None also means that current lyrics segment should not change
+                // None also means that current lyrics segment should not change
                 {
                     server.on_active_lyrics_segment_changed(Some(new_timed_text.clone()), &c);
                 }
