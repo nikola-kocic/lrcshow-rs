@@ -222,8 +222,7 @@ fn query_unique_owner_name(c: &Connection, bus_name: &str) -> Result<String, Str
         "/",
         "org.freedesktop.DBus",
         "GetNameOwner",
-    )
-    .map_err(|e| e.to_string())?
+    )?
     .append1(bus_name);
 
     c.send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
@@ -486,7 +485,7 @@ pub fn subscribe_to_player_start_stop<'a>(
     proxy_generic_dbus
         .match_signal(get_dbus_name_owned_changed_handler(
             sender.clone(),
-            player_bus.clone(),
+            player_bus,
         ))
         .map_err(|e| e.to_string())?;
     Ok(())

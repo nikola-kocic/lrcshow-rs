@@ -432,7 +432,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         }
                     }
                     on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
-                    on_active_lyrics_segment_changed(timing, &c,);
+                    on_active_lyrics_segment_changed(timing, &c);
                 }
                 Event::PlayerShutDown => {
                     // return Some(());
