@@ -159,7 +159,7 @@ fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
         Some(c) => {
             let mut buf = [0; 10];
             Err(format!(
-                "Invalid lrc file format. First character in line: \"{}\" (bytes: {:x?})",
+                "Invalid lrc file format. First character in line: \"{}\" (hex bytes: {:x?})",
                 c,
                 c.encode_utf8(&mut buf).as_bytes()
             ))
