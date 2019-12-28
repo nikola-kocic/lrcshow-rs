@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -12,68 +11,13 @@ use dbus::{arg, Message};
 use log::{debug, info, warn};
 use url::Url;
 
+use crate::events::{Event, Metadata, PlaybackStatus, PlayerEvent, TimedEvent};
+
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
 type DbusStringMap = HashMap<String, arg::Variant<Box<dyn arg::RefArg>>>;
 pub type ConnectionProxy<'a> = Proxy<'a, &'a Connection>;
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum PlaybackStatus {
-    Playing,
-    Paused,
-    Stopped,
-}
-
-#[derive(Clone, Debug)]
-pub struct Metadata {
-    album: Option<String>,
-    title: String,
-    artists: Option<Vec<String>>,
-    file_path: PathBuf,
-    length: i64,
-}
-
-impl Metadata {
-    #[allow(dead_code)]
-    pub fn album(&self) -> &Option<String> {
-        &self.album
-    }
-
-    #[allow(dead_code)]
-    pub fn title(&self) -> &String {
-        &self.title
-    }
-
-    #[allow(dead_code)]
-    pub fn artists(&self) -> &Option<Vec<String>> {
-        &self.artists
-    }
-
-    pub fn file_path(&self) -> &PathBuf {
-        &self.file_path
-    }
-
-    #[allow(dead_code)]
-    pub fn length(&self) -> i64 {
-        self.length
-    }
-}
-
-#[derive(Debug)]
-pub enum Event {
-    PlayerStarted,
-    PlayerShutDown,
-    PlaybackStatusChange(PlaybackStatus),
-    Seeked { position: Duration },
-    MetadataChange(Option<Metadata>),
-}
-
-#[derive(Debug)]
-pub struct TimedEvent {
-    pub instant: Instant,
-    pub event: Event,
-}
 
 #[derive(Debug)]
 pub struct PositionSnapshot {
@@ -354,9 +298,9 @@ fn get_mediaplayer2_seeked_handler(
         sender
             .send(TimedEvent {
                 instant,
-                event: Event::Seeked {
+                event: Event::PlayerEvent(PlayerEvent::Seeked {
                     position: Duration::from_micros(e.position_us as u64),
-                },
+                }),
             })
             .unwrap();
         true
@@ -378,8 +322,8 @@ fn get_dbus_properties_changed_handler(
                         sender
                             .send(TimedEvent {
                                 instant,
-                                event: Event::PlaybackStatusChange(parse_playback_status(
-                                    &playback_status,
+                                event: Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
+                                    parse_playback_status(&playback_status),
                                 )),
                             })
                             .unwrap();
@@ -391,7 +335,7 @@ fn get_dbus_properties_changed_handler(
                         sender
                             .send(TimedEvent {
                                 instant,
-                                event: Event::MetadataChange(metadata),
+                                event: Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)),
                             })
                             .unwrap();
                     }
@@ -423,14 +367,14 @@ fn get_dbus_name_owned_changed_handler(
             sender
                 .send(TimedEvent {
                     instant,
-                    event: Event::PlayerShutDown,
+                    event: Event::PlayerEvent(PlayerEvent::PlayerShutDown),
                 })
                 .unwrap();
         } else if e.name == player_bus && e.new_owner.is_empty() {
             sender
                 .send(TimedEvent {
                     instant,
-                    event: Event::PlayerStarted,
+                    event: Event::PlayerEvent(PlayerEvent::PlayerStarted),
                 })
                 .unwrap();
         }
