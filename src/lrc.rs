@@ -156,10 +156,14 @@ fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
             let text = texts.join("");
             Ok(LrcLine::TimedText(TimedText { text, timings }))
         }
-        Some(c) => Err(format!(
-            "Invalid lrc file format. First character in line: {}",
-            c
-        )),
+        Some(c) => {
+            let mut buf = [0; 10];
+            Err(format!(
+                "Invalid lrc file format. First character in line: \"{}\" (bytes: {:x?})",
+                c,
+                c.encode_utf8(&mut buf).as_bytes()
+            ))
+        }
     }
 }
 
