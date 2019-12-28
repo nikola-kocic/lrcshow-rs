@@ -19,16 +19,14 @@ class LrcReceiver:
         self.line_index = None
         self.line_char_from_index = None
         self.line_char_to_index = None
-        self.hal_manager_interface = None
 
     def _get_hal_manager(self):
-        if self.hal_manager_interface is None:
-            hal_manager_object = self.bus.get_object(
-                'com.github.nikola_kocic.lrcshow_rs',
-                '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
-            self.hal_manager_interface = dbus.Interface(
-                hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
-        return self.hal_manager_interface
+        hal_manager_object = self.bus.get_object(
+            'com.github.nikola_kocic.lrcshow_rs',
+            '/com/github/nikola_kocic/lrcshow_rs/Lyrics')
+        # Can't easily cache object because it should handle player restart
+        return dbus.Interface(
+            hal_manager_object, 'com.github.nikola_kocic.lrcshow_rs.Lyrics')
 
     def _read_lyrics(self):
         lyrics_text = None
