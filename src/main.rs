@@ -19,7 +19,7 @@ use crate::events::{
 };
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
-use crate::player::get_connection_proxy;
+use crate::player::{get_connection_proxy, PlayerNotifications};
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -91,13 +91,12 @@ fn format_duration(duration: &Duration) -> String {
     format!("{:02}:{:05.2}", minutes, seconds)
 }
 
-fn read_events(c: &mut Connection, receiver: &Receiver<TimedEvent>) -> Option<Vec<TimedEvent>> {
+fn read_events(receiver: &Receiver<TimedEvent>) -> Option<Vec<TimedEvent>> {
     let mut v = Vec::new();
-    c.process(REFRESH_EVERY).unwrap();
     loop {
-        match receiver.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return None,
+        match receiver.recv_timeout(REFRESH_EVERY) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
             Ok(event) => v.push(event),
         }
     }
@@ -105,48 +104,22 @@ fn read_events(c: &mut Connection, receiver: &Receiver<TimedEvent>) -> Option<Ve
 }
 
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
-    let mut c = Connection::new_session().unwrap();
     let server = server::Server::new();
     server.run_async();
 
     let (sender, receiver) = channel::<TimedEvent>();
-    player::subscribe_to_player_start_stop(&c, &player, &sender).unwrap();
-    let mut player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
 
+    let player_notifs = PlayerNotifications::new(sender);
+    player_notifs.run_async(&player);
+    let c = Connection::new_session().unwrap();
+
+    let mut player_owner_name: Option<String> = None;
     let mut lrc = None;
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;
-    let mut init = player_owner_name.is_some();
 
     loop {
-        if init {
-            init = false;
-            player_owner_name = player::subscribe(&c, &player, &sender).unwrap();
-            player_state = Some(
-                player::query_player_state(&get_connection_proxy(
-                    &c,
-                    &player_owner_name.clone().unwrap(),
-                ))
-                .unwrap(),
-            ); // TODO: This is often crashing on player restart
-            debug!("player_state = {:?}", player_state);
-
-            if let Some(player_state) = player_state.as_ref() {
-                if let Some(filepath) =
-                    get_lrc_filepath(&player_state.metadata).or_else(|| lrc_filepath.clone())
-                {
-                    lrc = LrcManager::new(filepath);
-                    lrc_state = lrc.as_ref().map(|l| {
-                        LrcTimedTextState::new(&l.lyrics, player_state.current_position())
-                    });
-                }
-                server.on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
-                let timed_text = lrc_state.as_ref().and_then(|l| l.current.cloned());
-                server.on_active_lyrics_segment_changed(timed_text, &c);
-            }
-        }
-
-        let timed_events = read_events(&mut c, &receiver)?;
+        let timed_events = read_events(&receiver)?;
         let received_events = !timed_events.is_empty();
         for timed_event in timed_events {
             debug!("{:?}", timed_event);
@@ -233,8 +206,33 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     player_state = None;
                     player_owner_name = None;
                 }
-                Event::PlayerEvent(PlayerEvent::PlayerStarted) => {
-                    init = true;
+                Event::PlayerEvent(PlayerEvent::PlayerStarted {
+                    player_owner_name: n,
+                }) => {
+                    player_owner_name = Some(n);
+
+                    player_state = Some(
+                        player::query_player_state(&get_connection_proxy(
+                            &c,
+                            &player_owner_name.clone().unwrap(),
+                        ))
+                        .unwrap(),
+                    ); // TODO: This is often crashing on player restart
+                    debug!("player_state = {:?}", player_state);
+
+                    if let Some(player_state) = player_state.as_ref() {
+                        if let Some(filepath) = get_lrc_filepath(&player_state.metadata)
+                            .or_else(|| lrc_filepath.clone())
+                        {
+                            lrc = LrcManager::new(filepath);
+                            lrc_state = lrc.as_ref().map(|l| {
+                                LrcTimedTextState::new(&l.lyrics, player_state.current_position())
+                            });
+                        }
+                        server.on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
+                        let timed_text = lrc_state.as_ref().and_then(|l| l.current.cloned());
+                        server.on_active_lyrics_segment_changed(timed_text, &c);
+                    }
                 }
             }
 

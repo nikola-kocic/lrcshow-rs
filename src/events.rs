@@ -48,7 +48,7 @@ impl PlayerState {
 
 #[derive(Debug)]
 pub enum PlayerEvent {
-    PlayerStarted,
+    PlayerStarted { player_owner_name: String },
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
