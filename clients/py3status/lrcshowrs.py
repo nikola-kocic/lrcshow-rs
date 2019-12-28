@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import sys
@@ -8,17 +9,88 @@ from gi.repository import GLib
 import dbus
 import dbus.mainloop.glib
 
-
-class LrcReceiver:
-    def __init__(self, update_callback, logger):
-        self.update_callback = update_callback
+class LrcInfo:
+    def __init__(self, logger):
         self.logger = logger
 
-        self.bus = None
         self.lyrics_text = None
         self.line_index = None
         self.line_char_from_index = None
         self.line_char_to_index = None
+
+class SingleLineFormatter:
+    def __init__(self, lrc_info, logger):
+        self.logger = logger
+        self.lrc_info = lrc_info
+        self.single_line = ""
+        self._current_lyrics_text = None
+        self.line_index_to_single_line_index_mapping = []
+
+    def _update_data_if_needed(self):
+        if self.lrc_info.lyrics_text is None or self._current_lyrics_text is not self.lrc_info.lyrics_text:
+            self._current_lyrics_text = self.lrc_info.lyrics_text
+            self.line_index_to_single_line_index_mapping.clear()
+            self.single_line = ""
+
+            if self._current_lyrics_text is not None:
+                for line in self._current_lyrics_text:
+                    self.line_index_to_single_line_index_mapping.append(len(self.single_line))
+                    self.single_line += line + "|"
+                # For last line
+                self.line_index_to_single_line_index_mapping.append(len(self.single_line))
+
+    def get_as_single_line(self):
+        self._update_data_if_needed()
+
+        text_before = ""
+        pre_active = ""
+        active = ""
+        post_active = ""
+        text_after = ""
+        if len(self.single_line) == 0:
+            return (text_before, pre_active, active, post_active, text_after)
+
+        active_line_start_index = self.line_index_to_single_line_index_mapping[self.lrc_info.line_index]
+        active_line_end_index = self.line_index_to_single_line_index_mapping[self.lrc_info.line_index + 1]  # There should always be +1
+
+        active_line_len = active_line_end_index - active_line_start_index
+        remaining_len_after = len(self.single_line) - active_line_end_index
+        max_width = 110
+        remaining_total_len = max_width - active_line_len
+        desired_min_width_after = min(remaining_total_len, max(20, int((remaining_total_len * 3) / 4)))
+
+        if remaining_len_after < remaining_total_len:  # We are near end, show as much text before active as we can
+            text_after = self.single_line[active_line_end_index:]
+            text_before_start_index = max(0, active_line_start_index - remaining_total_len + len(text_after))
+            text_before = self.single_line[text_before_start_index:active_line_start_index]
+        else:
+            desired_width_before = remaining_total_len - desired_min_width_after
+            text_before_start_index = max(0, active_line_start_index - desired_width_before)
+            text_before = self.single_line[text_before_start_index:active_line_start_index]
+            text_after_len = remaining_total_len - len(text_before)
+            assert text_after_len > 0
+            text_after = self.single_line[active_line_end_index:active_line_end_index + text_after_len]
+
+        if self.lrc_info.line_char_to_index is not None and self.lrc_info.line_char_from_index is not None:
+            active_start_index = active_line_start_index + self.lrc_info.line_char_from_index
+            post_active_start_index = active_line_start_index + self.lrc_info.line_char_to_index
+
+            pre_active = self.single_line[active_line_start_index:active_start_index]
+            active = self.single_line[active_start_index:post_active_start_index]
+            post_active = self.single_line[post_active_start_index:active_line_end_index]
+        else:
+            active = self.single_line[active_line_start_index:active_line_end_index]
+
+        ret = (text_before, pre_active, active, post_active, text_after)
+        self.logger("{}".format(ret))
+        return ret
+
+class LrcReceiver:
+    def __init__(self, update_callback, lrc_info, logger):
+        self.update_callback = update_callback
+        self.logger = logger
+        self.lrc_info = lrc_info
+        self.bus = None
 
     def _get_hal_manager(self):
         hal_manager_object = self.bus.get_object(
@@ -44,37 +116,38 @@ class LrcReceiver:
         try:
             lyrics_position = self._get_hal_manager().GetCurrentLyricsPosition()
             if lyrics_position[0] < 0:
-                self.line_index = None
-                self.line_char_from_index = None
-                self.line_char_to_index = None
+                self.lrc_info.line_index = None
+                self.lrc_info.line_char_from_index = None
+                self.lrc_info.line_char_to_index = None
             else:
-                self.line_index = lyrics_position[0]
-                self.line_char_from_index = lyrics_position[1]
-                self.line_char_to_index = lyrics_position[2]
+                self.lrc_info.line_index = int(lyrics_position[0])
+                self.lrc_info.line_char_from_index = int(lyrics_position[1])
+                self.lrc_info.line_char_to_index = int(lyrics_position[2])
             self.logger("Got lyrics position: " + str(lyrics_position))
         except dbus.exceptions.DBusException as e:
             self.logger("Exception getting lyrics position: " + str(e))
 
     def _on_active_lyrics_line_changed(
             self, line_index, line_char_from_index, line_char_to_index, *args, **kwargs):
-        self.logger("_on_active_lyrics_line_changed: " + str(line_index))
-        if self.lyrics_text is None:
-            self.lyrics_text = self._read_lyrics()
+        self.logger("_on_active_lyrics_line_changed: {}: {}-{}".format(line_index, line_char_from_index, line_char_to_index))
+        if self.lrc_info.lyrics_text is None:
+            self.lrc_info.lyrics_text = self._read_lyrics()
         if line_index < 0:
-            self.line_index = None
-            self.line_char_from_index = None
-            self.line_char_to_index = None
+            self.lrc_info.line_index = None
+            self.lrc_info.line_char_from_index = None
+            self.lrc_info.line_char_to_index = None
         else:
-            self.line_index = line_index
-            self.line_char_from_index = line_char_from_index
-            self.line_char_to_index = line_char_to_index
+            self.lrc_info.line_index = int(line_index)
+            self.lrc_info.line_char_from_index = int(line_char_from_index)
+            self.lrc_info.line_char_to_index = int(line_char_to_index)
         self.update_callback()
 
     def _on_active_lyrics_changed(self):
-        self.line_index = None
-        self.line_char_from_index = None
-        self.line_char_to_index = None
-        self.lyrics_text = self._read_lyrics()
+        self.lrc_info.line_index = None
+        self.lrc_info.line_char_from_index = None
+        self.lrc_info.line_char_to_index = None
+        self.lrc_info.lyrics_text = self._read_lyrics()
+        self._update_lyrics_position()
         self.update_callback()
 
     def start_loop(self):
@@ -82,9 +155,7 @@ class LrcReceiver:
 
         self.bus = dbus.SessionBus()
 
-        self.lyrics_text = self._read_lyrics()
-        self._update_lyrics_position()
-        self.update_callback()
+        self._on_active_lyrics_changed()
 
         self.bus.add_signal_receiver(
             self._on_active_lyrics_line_changed,
@@ -99,24 +170,21 @@ class LrcReceiver:
         loop = GLib.MainLoop()
         loop.run()
 
-    def has_valid_lyrics(self):
-        return (
-            self.lyrics_text is not None
-            and self.line_index is not None
-            and self.line_index < len(self.lyrics_text)
-        )
-
 
 class Py3status:
     def __init__(self):
         self.update_thread = None
         self.lyrics_receiver = None
-        self.max_width = 110
+        self.lrc_info = None
+        self.lrc_formatter = None
 
     def post_config_hook(self):
         log = lambda t: None
         # log = self.py3.log
-        self.lyrics_receiver = LrcReceiver(self.py3.update, log)
+
+        self.lrc_info = LrcInfo(log)
+        self.lrc_formatter = SingleLineFormatter(self.lrc_info, log)
+        self.lyrics_receiver = LrcReceiver(self.py3.update, self.lrc_info, log)
 
     def _start_handler_thread(self):
         """Called once to start the event handler thread."""
@@ -125,59 +193,7 @@ class Py3status:
         self.update_thread.start()
 
     def _get_composite_content(self):
-        if not self.lyrics_receiver.has_valid_lyrics():
-            return [{'full_text': ''}]
-
-        lyrics_text = self.lyrics_receiver.lyrics_text
-        line_index = self.lyrics_receiver.line_index
-        line_char_from_index = self.lyrics_receiver.line_char_from_index
-        line_char_to_index = self.lyrics_receiver.line_char_to_index
-        active_line = lyrics_text[line_index]
-
-        if len(active_line) >= self.max_width:
-            text_before = ""
-            text_after = ""
-        else:
-            text_after_index = line_index + 1
-            text_after = ""
-            def maybe_append_after():
-                nonlocal text_after_index
-                nonlocal text_after
-                while text_after_index < len(lyrics_text):
-                    maybe_append = "|" + lyrics_text[text_after_index]
-                    if len(active_line) + len(text_before) + len(text_after) + len(maybe_append) > self.max_width:
-                        return False
-                    text_after += maybe_append
-                    text_after_index += 1
-                    if len(maybe_append) > 10:
-                        return True
-
-            text_before_index = line_index - 1
-            text_before = ""
-            def maybe_append_before():
-                nonlocal text_before_index
-                nonlocal text_before
-                while text_before_index > 0 and text_before_index < len(lyrics_text):
-                    maybe_prepend = lyrics_text[text_before_index] + "|"
-                    if len(active_line) + len(text_before) + len(text_after) + len(maybe_prepend) > self.max_width:
-                        return False
-                    text_before = maybe_prepend + text_before
-                    text_before_index -= 1
-                    if len(maybe_prepend) > 10:
-                        return True
-
-            while len(active_line) + len(text_before) + len(text_after) < self.max_width:
-                if not maybe_append_after() or not maybe_append_before():
-                    break
-
-        if line_char_to_index is not None and line_char_from_index is not None:
-            pre_active = active_line[0:line_char_from_index]
-            active = active_line[line_char_from_index:line_char_to_index]
-            post_active = active_line[line_char_to_index:]
-        else:
-            pre_active = ""
-            active = active_line
-            post_active = ""
+        text_before, pre_active, active, post_active, text_after = self.lrc_formatter.get_as_single_line()
 
         return [
             {'full_text': text_before, 'color': '#808080'},
@@ -197,26 +213,43 @@ class Py3status:
         }
 
 
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+def print_to_stderr(t):
+    sys.stderr.write(t)
+    sys.stderr.write('\n')
+    sys.stderr.flush()
+
+
 class TerminalPrinter:
     def __init__(self):
         self.last_line_index = -1
-
-        log = lambda t: None
-        # log = print
-        self.lyrics_receiver = LrcReceiver(self.update, log)
+        # log = lambda t: None
+        log = print_to_stderr
+        self.lrc_info = LrcInfo(log)
+        self.lyrics_receiver = LrcReceiver(self.update, self.lrc_info, log)
         self.lyrics_receiver.start_loop()
 
     def update(self):
-        if not self.lyrics_receiver.has_valid_lyrics():
+        lyrics_text = self.lrc_info.lyrics_text
+        line_index = self.lrc_info.line_index
+        line_char_from_index = self.lrc_info.line_char_from_index
+        line_char_to_index = self.lrc_info.line_char_to_index
+
+        if lyrics_text is None or line_index is None or line_index < 0:
             self.last_line_index = -1
             sys.stdout.write("\r{}".format(" " * 80))
             sys.stdout.write("\r")
         else:
-            lyrics_text = self.lyrics_receiver.lyrics_text
-            line_index = self.lyrics_receiver.line_index
-            line_char_from_index = self.lyrics_receiver.line_char_from_index
-            line_char_to_index = self.lyrics_receiver.line_char_to_index
-
             if line_index != self.last_line_index:
                 sys.stdout.write("\r{}".format(" " * 80))
                 sys.stdout.write("\r{}\n".format(lyrics_text[line_index]))
@@ -228,5 +261,27 @@ class TerminalPrinter:
         sys.stdout.flush()
 
 
+class SingleLineTerminalPrinter:
+    def __init__(self):
+        # log = lambda t: None
+        log = print_to_stderr
+
+        self.lrc_info = LrcInfo(log)
+        self.lrc_formatter = SingleLineFormatter(self.lrc_info, log)
+        self.lyrics_receiver = LrcReceiver(self.update, self.lrc_info, log)
+        self.lyrics_receiver.start_loop()
+
+    def update(self):
+        text_before, pre_active, active, post_active, text_after = self.lrc_formatter.get_as_single_line()
+        text_len = len(text_before) + len(pre_active) + len(active) + len(post_active) + len(text_after)
+        new_line = (
+            text_before + bcolors.OKBLUE + pre_active +
+            bcolors.BOLD + active + bcolors.ENDC +
+            bcolors.OKBLUE + post_active + bcolors.ENDC + text_after
+        )
+        sys.stdout.write("\r{}{}".format(new_line, " " * (120 - text_len)))
+        sys.stdout.flush()
+
+
 if __name__ == '__main__':
-    TerminalPrinter()
+    SingleLineTerminalPrinter()
