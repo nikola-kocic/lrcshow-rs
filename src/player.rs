@@ -418,7 +418,7 @@ fn get_dbus_name_owned_changed_handler(
 ) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
     move |e: DbusNameOwnedChanged, _: &Connection| {
         let instant = Instant::now();
-        debug!("DbusNameOwnedChanged happened: {:?}", e);
+        // debug!("DbusNameOwnedChanged happened: {:?}", e);
         if e.name == player_bus && e.old_owner.is_empty() {
             sender
                 .send(TimedEvent {
