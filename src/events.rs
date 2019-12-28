@@ -18,6 +18,35 @@ pub struct Metadata {
 }
 
 #[derive(Debug)]
+pub struct PositionSnapshot {
+    /// Position at the time of construction
+    pub position: Duration,
+
+    /// When this object was constructed, in order to calculate how old it is.
+    pub instant: Instant,
+}
+
+#[derive(Debug)]
+pub struct PlayerState {
+    pub playback_status: PlaybackStatus,
+
+    pub position_snapshot: PositionSnapshot,
+
+    /// If player is stopped, metadata will be None
+    pub metadata: Option<Metadata>,
+}
+
+impl PlayerState {
+    pub fn current_position(&self) -> Duration {
+        if self.playback_status == PlaybackStatus::Playing {
+            self.position_snapshot.position + (Instant::now() - self.position_snapshot.instant)
+        } else {
+            self.position_snapshot.position
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum PlayerEvent {
     PlayerStarted,
     PlayerShutDown,

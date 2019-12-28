@@ -11,42 +11,15 @@ use dbus::{arg, Message};
 use log::{debug, info, warn};
 use url::Url;
 
-use crate::events::{Event, Metadata, PlaybackStatus, PlayerEvent, TimedEvent};
+use crate::events::{
+    Event, Metadata, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
+};
 
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
 type DbusStringMap = HashMap<String, arg::Variant<Box<dyn arg::RefArg>>>;
 pub type ConnectionProxy<'a> = Proxy<'a, &'a Connection>;
-
-#[derive(Debug)]
-pub struct PositionSnapshot {
-    /// Position at the time of construction
-    pub position: Duration,
-
-    /// When this Progress was constructed, in order to calculate how old it is.
-    pub instant: Instant,
-}
-
-#[derive(Debug)]
-pub struct Progress {
-    pub playback_status: PlaybackStatus,
-
-    pub position_snapshot: PositionSnapshot,
-
-    /// If player is stopped, metadata will be None
-    pub metadata: Option<Metadata>,
-}
-
-impl Progress {
-    pub fn current_position(&self) -> Duration {
-        if self.playback_status == PlaybackStatus::Playing {
-            self.position_snapshot.position + (Instant::now() - self.position_snapshot.instant)
-        } else {
-            self.position_snapshot.position
-        }
-    }
-}
 
 fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String>
 where
@@ -135,7 +108,7 @@ fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String
     query_player_property::<DbusStringMap>(p, "Metadata").and_then(parse_player_metadata)
 }
 
-pub fn query_progress(p: &ConnectionProxy) -> Result<Progress, String> {
+pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
     let playback_status = query_player_playback_status(p)?;
     let position = query_player_position(p)?;
     let instant = Instant::now();
@@ -144,7 +117,7 @@ pub fn query_progress(p: &ConnectionProxy) -> Result<Progress, String> {
     } else {
         None
     };
-    Ok(Progress {
+    Ok(PlayerState {
         playback_status,
         position_snapshot: PositionSnapshot { position, instant },
         metadata,
