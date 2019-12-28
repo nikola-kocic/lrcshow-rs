@@ -15,7 +15,7 @@ use structopt::StructOpt;
 use log::{debug, error, info, warn};
 
 use crate::events::{
-    Event, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
+    Event, LyricsEvent, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
 };
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
@@ -109,14 +109,19 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 
     let (sender, receiver) = channel::<TimedEvent>();
 
-    let player_notifs = PlayerNotifications::new(sender);
+    let player_notifs = PlayerNotifications::new(sender.clone());
     player_notifs.run_async(&player);
     let c = Connection::new_session().unwrap();
 
     let mut player_owner_name: Option<String> = None;
-    let mut lrc = None;
+
+    let lrc_manager = LrcManager::new(sender);
+    let lrc_manager_sender = lrc_manager.clone_sender();
+    lrc_manager.run_async();
+
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;
+    let mut lyrics: Option<Lyrics> = None;
 
     loop {
         let timed_events = read_events(&receiver)?;
@@ -170,39 +175,17 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     }
                 }
                 Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
+                    LrcManager::change_watched_path(
+                        get_lrc_filepath(metadata.clone()),
+                        &lrc_manager_sender,
+                    );
                     if let Some(ref mut p) = player_state {
                         p.metadata = metadata;
                     }
-                    let mut timing = None;
-                    match player_state
-                        .as_ref()
-                        .and_then(|p| get_lrc_filepath(&p.metadata))
-                        .or_else(|| lrc_filepath.clone())
-                    {
-                        Some(filepath) => {
-                            lrc = LrcManager::new(filepath);
-                            lrc_state = lrc.as_ref().and_then(|l| {
-                                player_state.as_ref().map(|p| {
-                                    LrcTimedTextState::new(&l.lyrics, p.current_position())
-                                })
-                            });
-                            timing = Some(LyricsTiming {
-                                time: Duration::from_secs(0),
-                                line_index: 0,
-                                line_char_from_index: 0,
-                                line_char_to_index: 0,
-                            });
-                        }
-                        None => {
-                            lrc = None;
-                            lrc_state = None;
-                        }
-                    }
-                    server.on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
-                    server.on_active_lyrics_segment_changed(timing, &c);
                 }
                 Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
                     // return Some(());
+                    LrcManager::change_watched_path(None, &lrc_manager_sender);
                     player_state = None;
                     player_owner_name = None;
                 }
@@ -218,54 +201,40 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         ))
                         .unwrap(),
                     ); // TODO: This is often crashing on player restart
-                    debug!("player_state = {:?}", player_state);
 
-                    if let Some(player_state) = player_state.as_ref() {
-                        if let Some(filepath) = get_lrc_filepath(&player_state.metadata)
-                            .or_else(|| lrc_filepath.clone())
-                        {
-                            lrc = LrcManager::new(filepath);
-                            lrc_state = lrc.as_ref().map(|l| {
-                                LrcTimedTextState::new(&l.lyrics, player_state.current_position())
-                            });
-                        }
-                        server.on_lyrics_changed(lrc.as_ref().map(|l| l.lyrics.lines.clone()), &c);
-                        let timed_text = lrc_state.as_ref().and_then(|l| l.current.cloned());
-                        server.on_active_lyrics_segment_changed(timed_text, &c);
-                    }
+                    LrcManager::change_watched_path(
+                        get_lrc_filepath(player_state.as_ref().and_then(|p| p.metadata.clone())),
+                        &lrc_manager_sender,
+                    );
+                }
+                Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
+                    lrc_state = None;  // will be asigned after event processing
+                    lyrics = l;
+                    server.on_lyrics_changed(lyrics.as_ref().map(|l| l.lines.clone()), &c);
                 }
             }
 
             debug!("player_state = {:?}", player_state);
         }
 
-        if let Some(new_lrc) = lrc.as_ref().and_then(|l| l.maybe_recreate()) {
-            server.on_lyrics_changed(Some(new_lrc.lyrics.lines.clone()), &c);
-            lrc = Some(new_lrc);
-            lrc_state = lrc.as_ref().and_then(|l| {
-                player_state
-                    .as_ref()
-                    .map(|p| LrcTimedTextState::new(&l.lyrics, p.current_position()))
-            });
-        }
-
         // Print new lyrics line, if needed
         if received_events {
-            lrc_state = lrc.as_ref().and_then(|l| {
+            lrc_state = lyrics.as_ref().and_then(|l| {
                 player_state
                     .as_ref()
-                    .map(|p| LrcTimedTextState::new(&l.lyrics, p.current_position()))
+                    .map(|p| LrcTimedTextState::new(&l, p.current_position()))
             });
             let timed_text = lrc_state.as_ref().and_then(|l| l.current);
             server.on_active_lyrics_segment_changed(timed_text.cloned(), &c);
-        } else if player_state.as_ref().map(|p| p.playback_status) == Some(PlaybackStatus::Playing)
-        {
-            if let Some(new_timed_text) = lrc_state.as_mut().and_then(|l| {
-                player_state
-                    .as_ref()
-                    .and_then(|p| l.on_new_progress(p.current_position()))
-            }) {
-                server.on_active_lyrics_segment_changed(Some(new_timed_text.clone()), &c);
+        } else if let Some(ref player_state) = player_state {
+            if player_state.playback_status == PlaybackStatus::Playing {
+                if let Some(new_timed_text) = lrc_state
+                    .as_mut()
+                    .and_then(|l| l.on_new_progress(player_state.current_position()))
+                    // None also means that current lyrics segment should not change
+                {
+                    server.on_active_lyrics_segment_changed(Some(new_timed_text.clone()), &c);
+                }
             }
         }
     }
