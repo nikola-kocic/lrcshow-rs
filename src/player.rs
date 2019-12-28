@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{channel, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use dbus::arg::RefArg;
@@ -329,36 +330,29 @@ fn get_dbus_properties_changed_handler(
     }
 }
 
+enum PlayerLifetimeEvent {
+    PlayerStarted,
+    PlayerShutDown,
+}
+
 fn get_dbus_name_owned_changed_handler(
-    sender: Sender<TimedEvent>,
+    sender: Sender<PlayerLifetimeEvent>,
     player_bus: String,
 ) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
     move |e: DbusNameOwnedChanged, _: &Connection| {
-        let instant = Instant::now();
         // debug!("DbusNameOwnedChanged happened: {:?}", e);
         if e.name == player_bus && e.old_owner.is_empty() {
-            sender
-                .send(TimedEvent {
-                    instant,
-                    event: Event::PlayerEvent(PlayerEvent::PlayerShutDown),
-                })
-                .unwrap();
+            sender.send(PlayerLifetimeEvent::PlayerShutDown).unwrap();
         } else if e.name == player_bus && e.new_owner.is_empty() {
-            sender
-                .send(TimedEvent {
-                    instant,
-                    event: Event::PlayerEvent(PlayerEvent::PlayerStarted),
-                })
-                .unwrap();
+            sender.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
         }
         true
     }
 }
 
-pub fn subscribe<'a>(
+fn query_player_owner_name<'a>(
     c: &'a Connection,
-    player: &str,
-    sender: &Sender<TimedEvent>,
+    player: &'a str,
 ) -> Result<Option<String>, String> {
     let all_player_buses = query_all_player_buses(&c)?;
 
@@ -370,7 +364,14 @@ pub fn subscribe<'a>(
 
     let player_owner_name = query_unique_owner_name(&c, &player_bus)?;
     debug!("player_owner_name = {:?}", player_owner_name);
+    Ok(Some(player_owner_name))
+}
 
+fn subscribe<'a>(
+    c: &'a Connection,
+    player_owner_name: &'a str,
+    sender: &Sender<TimedEvent>,
+) -> Result<(), String> {
     let p = get_connection_proxy(c, &player_owner_name);
 
     p.match_signal(get_dbus_properties_changed_handler(sender.clone()))
@@ -384,13 +385,13 @@ pub fn subscribe<'a>(
     //     true
     // }).map_err(|e| e.to_string())?;
 
-    Ok(Some(player_owner_name))
+    Ok(())
 }
 
-pub fn subscribe_to_player_start_stop<'a>(
+fn subscribe_to_player_start_stop<'a>(
     c: &'a Connection,
     player: &str,
-    sender: &Sender<TimedEvent>,
+    sender: &Sender<PlayerLifetimeEvent>,
 ) -> Result<(), String> {
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
 
@@ -406,4 +407,64 @@ pub fn subscribe_to_player_start_stop<'a>(
         ))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub struct PlayerNotifications {
+    sender: Sender<TimedEvent>,
+}
+
+impl PlayerNotifications {
+    pub fn new(sender: Sender<TimedEvent>) -> Self {
+        Self { sender }
+    }
+
+    fn run_sync(&self, player: String) {
+        let (internal_sender, internal_receiver) = channel::<PlayerLifetimeEvent>();
+        let mut c = Connection::new_session().unwrap();
+        subscribe_to_player_start_stop(&c, &player, &internal_sender).unwrap();
+        internal_sender
+            .send(PlayerLifetimeEvent::PlayerStarted)
+            .unwrap();
+        loop {
+            loop {
+                match internal_receiver.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                    Ok(PlayerLifetimeEvent::PlayerStarted) => {
+                        if let Some(player_owner_name) =
+                            query_player_owner_name(&c, &player).unwrap()
+                        {
+                            let instant = Instant::now();
+                            subscribe(&c, &player_owner_name, &self.sender).unwrap();
+                            self.sender
+                                .send(TimedEvent {
+                                    instant,
+                                    event: Event::PlayerEvent(PlayerEvent::PlayerStarted {
+                                        player_owner_name,
+                                    }),
+                                })
+                                .unwrap();
+                        }
+                    }
+                    Ok(PlayerLifetimeEvent::PlayerShutDown) => {
+                        let instant = Instant::now();
+                        self.sender
+                            .send(TimedEvent {
+                                instant,
+                                event: Event::PlayerEvent(PlayerEvent::PlayerShutDown),
+                            })
+                            .unwrap();
+                    }
+                }
+            }
+            c.process(Duration::from_millis(16)).unwrap();
+        }
+    }
+
+    pub fn run_async(self, player: &str) {
+        let player_string = player.to_owned();
+        thread::spawn(move || {
+            self.run_sync(player_string);
+        });
+    }
 }
