@@ -3,32 +3,38 @@
 
 import sys
 from threading import Thread
+from typing import Callable, List, Optional
 
 from gi.repository import GLib
 
 import dbus
 import dbus.mainloop.glib
 
-class LrcInfo:
-    def __init__(self, logger):
-        self.logger = logger
+class LrcLineSegmentInfo:
+    def __init__(self, dbus_data):
+        self.line_index = int(dbus_data[0])
+        self.line_char_from_index = int(dbus_data[1])
+        self.line_char_to_index = int(dbus_data[2])
+        self.duration = int(dbus_data[3])
 
-        self.lyrics_text = None
-        self.line_index = None
-        self.line_char_from_index = None
-        self.line_char_to_index = None
+class LrcInfo:
+    def __init__(self, logger: Callable):
+        self.logger: Callable = logger
+
+        self.lines: Optional[List[str]] = None
+        self.active_segment: Optional[LrcLineSegmentInfo] = None
 
 class SingleLineFormatter:
-    def __init__(self, lrc_info, logger):
-        self.logger = logger
+    def __init__(self, lrc_info: LrcInfo, logger: Callable):
+        self.logger: Callable = logger
         self.lrc_info = lrc_info
         self.single_line = ""
         self._current_lyrics_text = None
-        self.line_index_to_single_line_index_mapping = []
+        self.line_index_to_single_line_index_mapping: List[int] = []
 
     def _update_data_if_needed(self):
-        if self.lrc_info.lyrics_text is None or self._current_lyrics_text is not self.lrc_info.lyrics_text:
-            self._current_lyrics_text = self.lrc_info.lyrics_text
+        if self.lrc_info.lines is None or self._current_lyrics_text is not self.lrc_info.lines:
+            self._current_lyrics_text = self.lrc_info.lines
             self.line_index_to_single_line_index_mapping.clear()
             self.single_line = ""
 
@@ -47,11 +53,13 @@ class SingleLineFormatter:
         active = ""
         post_active = ""
         text_after = ""
-        if len(self.single_line) == 0 or self.lrc_info.line_index is None:
+        if len(self.single_line) == 0 or self.lrc_info.active_segment is None:
             return (text_before, pre_active, active, post_active, text_after)
 
-        active_line_start_index = self.line_index_to_single_line_index_mapping[self.lrc_info.line_index]
-        active_line_end_index = self.line_index_to_single_line_index_mapping[self.lrc_info.line_index + 1]  # There should always be +1
+        active_segment = self.lrc_info.active_segment
+
+        active_line_start_index = self.line_index_to_single_line_index_mapping[active_segment.line_index]
+        active_line_end_index = self.line_index_to_single_line_index_mapping[active_segment.line_index + 1]  # There should always be +1
 
         active_line_len = active_line_end_index - active_line_start_index
         remaining_len_after = len(self.single_line) - active_line_end_index
@@ -71,25 +79,22 @@ class SingleLineFormatter:
             assert text_after_len > 0
             text_after = self.single_line[active_line_end_index:active_line_end_index + text_after_len]
 
-        if self.lrc_info.line_char_to_index is not None and self.lrc_info.line_char_from_index is not None:
-            active_start_index = active_line_start_index + self.lrc_info.line_char_from_index
-            post_active_start_index = active_line_start_index + self.lrc_info.line_char_to_index
+        active_start_index = active_line_start_index + active_segment.line_char_from_index
+        post_active_start_index = active_line_start_index + active_segment.line_char_to_index
 
-            pre_active = self.single_line[active_line_start_index:active_start_index]
-            active = self.single_line[active_start_index:post_active_start_index]
-            post_active = self.single_line[post_active_start_index:active_line_end_index]
-        else:
-            active = self.single_line[active_line_start_index:active_line_end_index]
+        pre_active = self.single_line[active_line_start_index:active_start_index]
+        active = self.single_line[active_start_index:post_active_start_index]
+        post_active = self.single_line[post_active_start_index:active_line_end_index]
 
         ret = (text_before, pre_active, active, post_active, text_after)
         self.logger("{}".format(ret))
         return ret
 
 class LrcReceiver:
-    def __init__(self, update_callback, lrc_info, logger):
+    def __init__(self, update_callback: Callable[[None], None], lrc_info: LrcInfo, logger: Callable[[str], None]):
         self.update_callback = update_callback
         self.logger = logger
-        self.lrc_info = lrc_info
+        self.lrc_info: LrcInfo = lrc_info
         self.bus = None
 
     def _get_hal_manager(self):
@@ -114,39 +119,25 @@ class LrcReceiver:
 
     def _update_lyrics_position(self):
         try:
-            lyrics_position = self._get_hal_manager().GetCurrentLyricsPosition()
-            if lyrics_position[0] < 0:
-                self.lrc_info.line_index = None
-                self.lrc_info.line_char_from_index = None
-                self.lrc_info.line_char_to_index = None
-            else:
-                self.lrc_info.line_index = int(lyrics_position[0])
-                self.lrc_info.line_char_from_index = int(lyrics_position[1])
-                self.lrc_info.line_char_to_index = int(lyrics_position[2])
-            self.logger("Got lyrics position: " + str(lyrics_position))
+            data = self._get_hal_manager().GetCurrentLyricsPosition()
+            self._on_active_lyrics_line_changed(data)
         except dbus.exceptions.DBusException as e:
             self.logger("Exception getting lyrics position: " + str(e))
 
-    def _on_active_lyrics_line_changed(
-            self, line_index, line_char_from_index, line_char_to_index, *args, **kwargs):
-        self.logger("_on_active_lyrics_line_changed: {}: {}-{}".format(line_index, line_char_from_index, line_char_to_index))
-        if self.lrc_info.lyrics_text is None:
-            self.lrc_info.lyrics_text = self._read_lyrics()
-        if line_index < 0:
-            self.lrc_info.line_index = None
-            self.lrc_info.line_char_from_index = None
-            self.lrc_info.line_char_to_index = None
+    def _on_active_lyrics_line_changed(self, data):
+        lyrics_position = LrcLineSegmentInfo(data)
+        self.logger("_on_active_lyrics_line_changed: {}".format(lyrics_position))
+        if self.lrc_info.lines is None:
+            self.lrc_info.lines = self._read_lyrics()
+        if lyrics_position.line_index < 0:
+            self.lrc_info.active_segment = None
         else:
-            self.lrc_info.line_index = int(line_index)
-            self.lrc_info.line_char_from_index = int(line_char_from_index)
-            self.lrc_info.line_char_to_index = int(line_char_to_index)
+            self.lrc_info.active_segment = lyrics_position
         self.update_callback()
 
     def _on_active_lyrics_changed(self):
-        self.lrc_info.line_index = None
-        self.lrc_info.line_char_from_index = None
-        self.lrc_info.line_char_to_index = None
-        self.lrc_info.lyrics_text = self._read_lyrics()
+        self.lrc_info.active_segment = None
+        self.lrc_info.lines = self._read_lyrics()
         self._update_lyrics_position()
         self.update_callback()
 
@@ -240,23 +231,21 @@ class TerminalPrinter:
         self.lyrics_receiver.start_loop()
 
     def update(self):
-        lyrics_text = self.lrc_info.lyrics_text
-        line_index = self.lrc_info.line_index
-        line_char_from_index = self.lrc_info.line_char_from_index
-        line_char_to_index = self.lrc_info.line_char_to_index
+        lyrics_text = self.lrc_info.lines
+        active_segment = self.lrc_info.active_segment
 
-        if lyrics_text is None or line_index is None or line_index < 0:
+        if lyrics_text is None or active_segment is None or active_segment.line_index < 0:
             self.last_line_index = -1
             sys.stdout.write("\r{}".format(" " * 80))
             sys.stdout.write("\r")
         else:
-            if line_index != self.last_line_index:
+            if active_segment.line_index != self.last_line_index:
                 sys.stdout.write("\r{}".format(" " * 80))
-                sys.stdout.write("\r{}\n".format(lyrics_text[line_index]))
-                self.last_line_index = line_index
+                sys.stdout.write("\r{}\n".format(lyrics_text[active_segment.line_index]))
+                self.last_line_index = active_segment.line_index
             sys.stdout.write("\r{}{}".format(
-                '-' * line_char_from_index,
-                '^' * (line_char_to_index - line_char_from_index)
+                '-' * active_segment.line_char_from_index,
+                '^' * (active_segment.line_char_to_index - active_segment.line_char_from_index)
             ))
         sys.stdout.flush()
 
@@ -274,7 +263,7 @@ class SingleLineTerminalPrinter:
     def update(self):
         text_len = 0
         new_line = ""
-        if self.lrc_info.line_index is not None:
+        if self.lrc_info.active_segment is not None:
             text_before, pre_active, active, post_active, text_after = self.lrc_formatter.get_as_single_line()
             text_len = len(text_before) + len(pre_active) + len(active) + len(post_active) + len(text_after)
             new_line = (
