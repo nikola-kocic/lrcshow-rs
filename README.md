@@ -21,17 +21,24 @@ Player communicates via D-Bus.
 ### D-Bus Methods
 Methods are on object path `/com/github/nikola_kocic/lrcshow_rs/Lyrics` and interface `com.github.nikola_kocic.lrcshow_rs.Lyrics`.
 
-#### GetCurrentLyrics() -> a{s}
-&nbsp;&nbsp;&nbsp;&nbsp;Get lyrics for current song.
+* **GetCurrentLyrics() -> a{s}**
+
+  Get lyrics for current song.
+
+* **GetCurrentLyricsPosition() -> (i: line_index, i: line_char_from_index, i: line_char_to_index, i: duration)**
+
+  Get current position of lyrics for current song.
 
 ### D-Bus Signals
 Signals are sent from object path `/com/github/nikola_kocic/lrcshow_rs/Daemon` and interface `com.github.nikola_kocic.lrcshow_rs.Daemon`.
 
-#### ActiveLyricsChanged()
-&nbsp;&nbsp;&nbsp;&nbsp;When lyrics for current song are changed.
+* **ActiveLyricsChanged()**
 
-#### ActiveLyricsSegmentChanged(i: line_index, i: line_char_from_index, i: line_char_to_index)
-&nbsp;&nbsp;&nbsp;&nbsp;When active lyrics segment is changed.
+  When lyrics for current song are changed.
+
+* **ActiveLyricsSegmentChanged((i: line_index, i: line_char_from_index, i: line_char_to_index, i: duration))**
+
+  When active lyrics segment is changed.
 
 ## Installation
 Project builds with the Rust stable version, using the Cargo build system.

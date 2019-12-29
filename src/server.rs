@@ -47,7 +47,7 @@ impl Server {
                                     .method_return()
                                     .append1(v.as_ref().map(|x| x.as_slice()).unwrap_or(&[]))])
                             })
-                            .outarg::<(&str,), _>("reply"),
+                            .outarg::<&str, _>("reply"),
                         )
                         .add_m(
                             f.method("GetCurrentLyricsPosition", (), move |m| {
@@ -83,17 +83,15 @@ impl Server {
             "ActiveLyricsSegmentChanged",
         )
         .unwrap();
-        let mut ia = dbus::arg::IterAppend::new(&mut s);
         if let Some(timing) = &timing {
-            ia.append(timing.line_index);
-            ia.append(timing.line_char_from_index);
-            ia.append(timing.line_char_to_index);
-            ia.append::<i32>(timing.time.as_millis().try_into().unwrap());
+            s = s.append1((
+                timing.line_index,
+                timing.line_char_from_index,
+                timing.line_char_to_index,
+                TryInto::<i32>::try_into(timing.time.as_millis()).unwrap(),
+            ));
         } else {
-            ia.append(-1);
-            ia.append(-1);
-            ia.append(-1);
-            ia.append(-1);
+            s = s.append1((-1, -1, -1, -1));
         }
 
         let value_changed = {
