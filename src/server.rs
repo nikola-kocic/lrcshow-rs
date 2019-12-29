@@ -76,8 +76,7 @@ impl Server {
         }
     }
 
-    pub fn on_active_lyrics_segment_changed(&self, timing: Option<LyricsTiming>, c: &Connection) {
-        info!("ActiveLyricsSegmentChanged {:?}", timing);
+    pub fn on_active_lyrics_segment_changed(&self, timing: Option<&LyricsTiming>, c: &Connection) {
         let mut s = Message::new_signal(
             "/com/github/nikola_kocic/lrcshow_rs/Daemon",
             "com.github.nikola_kocic.lrcshow_rs.Daemon",
@@ -97,12 +96,21 @@ impl Server {
             ia.append(-1);
         }
 
-        {
-            *self.current_timing.lock().unwrap() = timing;
-        }
+        let value_changed = {
+            let mut prev_value = self.current_timing.lock().unwrap();
+            if prev_value.as_ref() != timing {
+                info!("ActiveLyricsSegmentChanged {:?}", timing);
+                *prev_value = timing.cloned();
+                true
+            } else {
+                false
+            }
+        };
 
-        use dbus::channel::Sender;
-        c.send(s).unwrap();
+        if value_changed {
+            use dbus::channel::Sender;
+            c.send(s).unwrap();
+        }
     }
 
     pub fn on_lyrics_changed(&self, lines: Option<Vec<String>>, c: &Connection) {
