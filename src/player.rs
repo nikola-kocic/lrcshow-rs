@@ -313,6 +313,7 @@ fn get_dbus_properties_changed_handler(
                             })
                             .unwrap();
                     }
+                    "Volume" => {}
                     _ => {
                         warn!("Unknown PropertiesChanged event:");
                         for p in &e.changed_properties {

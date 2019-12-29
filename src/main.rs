@@ -161,7 +161,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                                 position_snapshot: PositionSnapshot {
                                     position: player::query_player_position(&get_connection_proxy(
                                         &c,
-                                        &player_owner_name.clone().unwrap(),
+                                        &player_owner_name.as_ref().unwrap(),
                                     ))
                                     .unwrap(),
                                     instant: Instant::now(),
@@ -191,8 +191,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         player_owner_name: n,
                     }) => {
                         player_state = Some(
-                            player::query_player_state(&get_connection_proxy(&c, &n.clone()))
-                                .unwrap(),
+                            player::query_player_state(&get_connection_proxy(&c, &n)).unwrap(),
                         ); // TODO: This is often crashing on player restart
 
                         player_owner_name = Some(n);
@@ -223,7 +222,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     .map(|p| LrcTimedTextState::new(&l, p.current_position()))
             });
             let timed_text = lrc_state.as_ref().and_then(|l| l.current);
-            server.on_active_lyrics_segment_changed(timed_text.cloned(), &c);
+            server.on_active_lyrics_segment_changed(timed_text, &c);
         } else if let Some(ref player_state) = player_state {
             if player_state.playback_status == PlaybackStatus::Playing {
                 let new_timed_text = lrc_state
@@ -231,7 +230,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     .and_then(|l| l.on_position_advanced(player_state.current_position()));
                 // None also means that current lyrics segment should not change
                 if new_timed_text.is_some() {
-                    server.on_active_lyrics_segment_changed(new_timed_text.cloned(), &c);
+                    server.on_active_lyrics_segment_changed(new_timed_text, &c);
                 }
             }
         }

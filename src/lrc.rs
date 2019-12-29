@@ -193,7 +193,7 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LyricsTiming {
     pub time: Duration,
     pub line_index: i32,           // index of line
