@@ -12,7 +12,7 @@ use dbus::blocking::Connection;
 use structopt::StructOpt;
 
 #[allow(unused_imports)]
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::events::{
     Event, LyricsEvent, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,

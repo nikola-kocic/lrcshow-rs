@@ -6,7 +6,7 @@ use std::time::Duration;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 #[allow(unused_imports)]
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::events::{Event, LyricsEvent, Metadata, TimedEvent};
 use crate::lrc::{parse_lrc_file, Lyrics};
@@ -84,7 +84,6 @@ impl LrcManager {
                         if lrc_file.is_some() {
                             info!("Lyrics file loaded: {:?}", file_path);
                         }
-                        debug!("Lyrics file structure: {:?}", lrc_file);
                         lrc_file.map(Lyrics::new)
                     } else {
                         info!("Lyrics file not found at {:?}", file_path);

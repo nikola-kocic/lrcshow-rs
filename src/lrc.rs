@@ -6,7 +6,8 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-use log::debug;
+#[allow(unused_imports)]
+use log::{debug, error, info, trace, warn};
 
 fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
     let file = File::open(filepath).map_err(|e| e.to_string())?;
@@ -91,7 +92,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
 }
 
 fn parse_tag(tag_content: &str) -> Result<Tag, String> {
-    debug!("Parsing tag content {}", tag_content);
+    trace!("Parsing tag content {}", tag_content);
     let first_char_in_tag_name = tag_content
         .chars()
         .next()
@@ -120,7 +121,7 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
 }
 
 fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
-    debug!("Parsing line {}", line);
+    trace!("Parsing line {}", line);
     match line.chars().next() {
         None => Ok(LrcLine::Empty),
         Some('[') => {
