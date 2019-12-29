@@ -29,6 +29,7 @@ impl LrcManager {
         file_path: Option<PathBuf>,
         sender: &std::sync::mpsc::Sender<InputEvents>,
     ) {
+        debug!("change_watched_path : {:?}", file_path);
         sender.send(InputEvents::ChangePath(file_path)).unwrap();
     }
 
@@ -45,13 +46,18 @@ impl LrcManager {
             let tx_clone = tx.clone();
             thread::spawn(move || loop {
                 match watcher_rx.recv() {
-                    Ok(event) => match event {
-                        notify::DebouncedEvent::Create(path)
-                        | notify::DebouncedEvent::Write(path) => {
-                            tx_clone.send(InputEvents::FileChanged(path)).unwrap();
+                    Ok(event) => {
+                        debug!("Watcher event: {:?}", event);
+                        match event {
+                            notify::DebouncedEvent::Create(path)
+                            | notify::DebouncedEvent::Write(path)
+                            | notify::DebouncedEvent::NoticeRemove(path)
+                            | notify::DebouncedEvent::Rename(_, path) => {
+                                tx_clone.send(InputEvents::FileChanged(path)).unwrap();
+                            }
+                            _ => {}
                         }
-                        _ => {}
-                    },
+                    }
                     Err(_) => {
                         return;
                     }
@@ -69,14 +75,22 @@ impl LrcManager {
 
     fn on_file_changed(&self, changed_file_path: Option<PathBuf>) {
         if changed_file_path == self.lrc_filepath {
-            let mut lyrics = None;
-            if let Some(file_path) = &self.lrc_filepath {
-                let lrc_file = parse_lrc_file(&file_path)
-                    .map_err(|e| error!("Parsing lrc file failed: {}", e))
-                    .ok();
-                debug!("lrc_file = {:?}", lrc_file);
-                lyrics = lrc_file.map(Lyrics::new);
-            }
+            let lyrics = {
+                if let Some(file_path) = &self.lrc_filepath {
+                    if file_path.is_file() {
+                        let lrc_file = parse_lrc_file(&file_path)
+                            .map_err(|e| error!("Parsing lrc file failed: {}", e))
+                            .ok();
+                        debug!("lrc_file = {:?}", lrc_file);
+                        lrc_file.map(Lyrics::new)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
             self.lyric_event_tx
                 .send(TimedEvent::new(Event::LyricsEvent(
                     LyricsEvent::LyricsChanged {
@@ -96,6 +110,7 @@ impl LrcManager {
                     if let Some(old_file_path) = &self.lrc_filepath {
                         let old_folder_path = old_file_path.parent().unwrap();
                         self.watcher.unwatch(old_folder_path).unwrap();
+                        debug!("Stopped watching {:?} for changes", old_folder_path);
                     }
                     self.lrc_filepath = file_path.clone();
                     if let Some(new_file_path) = &self.lrc_filepath {
@@ -103,6 +118,7 @@ impl LrcManager {
                         self.watcher
                             .watch(new_folder_path, RecursiveMode::Recursive)
                             .unwrap();
+                        debug!("Watching {:?} for changes", new_folder_path);
                     }
                     self.on_file_changed(file_path);
                 }
@@ -117,16 +133,8 @@ impl LrcManager {
     }
 }
 
-pub fn get_lrc_filepath(metadata: Option<Metadata>) -> Option<PathBuf> {
-    if let Some(metadata) = metadata {
-        let mut lrc_filepath = metadata.file_path.clone();
-        lrc_filepath.set_extension("lrc");
-        if lrc_filepath.is_file() {
-            info!("Loading lyrics from {}", lrc_filepath.display());
-            return Some(lrc_filepath);
-        } else {
-            warn!("Lyrics not found for {}", metadata.file_path.display());
-        }
-    }
-    None
+pub fn get_lrc_filepath(metadata: &Metadata) -> PathBuf {
+    let mut lrc_filepath = metadata.file_path.clone();
+    lrc_filepath.set_extension("lrc");
+    lrc_filepath
 }
