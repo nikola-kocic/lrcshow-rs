@@ -79,11 +79,15 @@ impl LrcManager {
                 if let Some(file_path) = &self.lrc_filepath {
                     if file_path.is_file() {
                         let lrc_file = parse_lrc_file(&file_path)
-                            .map_err(|e| error!("Parsing lrc file failed: {}", e))
+                            .map_err(|e| error!("Parsing lrc file {:?} failed: {}", file_path, e))
                             .ok();
-                        debug!("lrc_file = {:?}", lrc_file);
+                        if lrc_file.is_some() {
+                            info!("Lyrics file loaded: {:?}", file_path);
+                        }
+                        debug!("Lyrics file structure: {:?}", lrc_file);
                         lrc_file.map(Lyrics::new)
                     } else {
+                        info!("Lyrics file not found at {:?}", file_path);
                         None
                     }
                 } else {
