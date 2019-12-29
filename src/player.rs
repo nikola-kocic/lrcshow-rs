@@ -9,8 +9,10 @@ use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
 use dbus::blocking::BlockingSender;
 use dbus::blocking::{Connection, Proxy};
 use dbus::{arg, Message};
-use log::{debug, info, warn};
 use url::Url;
+
+#[allow(unused_imports)]
+use log::{debug, error, info, trace, warn};
 
 use crate::events::{
     Event, Metadata, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
@@ -45,7 +47,7 @@ fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, S
 fn parse_player_metadata<T: arg::RefArg>(
     metadata_map: HashMap<String, T>,
 ) -> Result<Option<Metadata>, String> {
-    debug!("metadata_map = {:?}", metadata_map);
+    trace!("metadata_map = {:#?}", metadata_map);
 
     let file_path_encoded = match metadata_map.get("xesam:url") {
         Some(url) => url
@@ -304,7 +306,6 @@ fn get_dbus_properties_changed_handler(
                     }
                     "Metadata" => {
                         let metadata_map = get_message_item_dict(v);
-                        debug!("metadata_map = {:?}", metadata_map);
                         let metadata = parse_player_metadata(metadata_map).unwrap();
                         sender
                             .send(TimedEvent {
