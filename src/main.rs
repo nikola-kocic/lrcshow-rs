@@ -99,14 +99,13 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 
     let player_notifs = PlayerNotifications::new(sender.clone());
     player_notifs.run_async(&player);
-    let c = Connection::new_session().unwrap();
-
-    let mut player_owner_name: Option<String> = None;
 
     let lrc_manager = LrcManager::new(sender);
     let lrc_manager_sender = lrc_manager.clone_sender();
     lrc_manager.run_async();
 
+    let c = Connection::new_session().unwrap();
+    let mut player_owner_name: Option<String> = None;
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;
     let mut lyrics: Option<Lyrics> = None;
@@ -173,7 +172,10 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                     }
                     Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
                         LrcManager::change_watched_path(
-                            get_lrc_filepath(metadata.clone()).or_else(|| lrc_filepath.clone()),
+                            metadata
+                                .as_ref()
+                                .map(|m| get_lrc_filepath(m))
+                                .or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
                         if let Some(ref mut p) = player_state {
@@ -195,10 +197,10 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 
                         player_owner_name = Some(n);
                         LrcManager::change_watched_path(
-                            get_lrc_filepath(
-                                player_state.as_ref().and_then(|p| p.metadata.clone()),
-                            )
-                            .or_else(|| lrc_filepath.clone()),
+                            player_state
+                                .as_ref()
+                                .and_then(|p| p.metadata.as_ref().map(|m| get_lrc_filepath(m)))
+                                .or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
                     }
