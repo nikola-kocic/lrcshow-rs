@@ -25,7 +25,7 @@ Methods are on object path `/com/github/nikola_kocic/lrcshow_rs/Lyrics` and inte
 
   Get lyrics for current song.
 
-* **GetCurrentLyricsPosition() -> (i: line_index, i: line_char_from_index, i: line_char_to_index, i: duration)**
+* **GetCurrentLyricsPosition() -> (i: line_index, i: line_char_from_index, i: line_char_to_index)**
 
   Get current position of lyrics for current song.
 
@@ -36,7 +36,7 @@ Signals are sent from object path `/com/github/nikola_kocic/lrcshow_rs/Daemon` a
 
   When lyrics for current song are changed.
 
-* **ActiveLyricsSegmentChanged((i: line_index, i: line_char_from_index, i: line_char_to_index, i: duration))**
+* **ActiveLyricsSegmentChanged((i: line_index, i: line_char_from_index, i: line_char_to_index))**
 
   When active lyrics segment is changed.
 
