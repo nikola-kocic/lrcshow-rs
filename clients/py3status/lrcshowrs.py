@@ -15,7 +15,10 @@ class LrcLineSegmentInfo:
         self.line_index = int(dbus_data[0])
         self.line_char_from_index = int(dbus_data[1])
         self.line_char_to_index = int(dbus_data[2])
-        self.duration = int(dbus_data[3])
+
+    def __str__(self):
+        return "{}:{}-{}".format(
+            self.line_index, self.line_char_from_index, self.line_char_to_index)
 
 class LrcInfo:
     def __init__(self, logger: Callable):
@@ -126,7 +129,7 @@ class LrcReceiver:
 
     def _on_active_lyrics_line_changed(self, data):
         lyrics_position = LrcLineSegmentInfo(data)
-        self.logger("_on_active_lyrics_line_changed: {}".format(lyrics_position))
+        self.logger("Active lyrics line changed: {}".format(lyrics_position))
         if self.lrc_info.lines is None:
             self.lrc_info.lines = self._read_lyrics()
         if lyrics_position.line_index < 0:

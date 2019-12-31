@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -60,10 +59,9 @@ impl Server {
                                                 x.line_index,
                                                 x.line_char_from_index,
                                                 x.line_char_to_index,
-                                                x.time.as_millis().try_into().unwrap(),
                                             )
                                         })
-                                        .unwrap_or((-1, -1, -1, -1)),
+                                        .unwrap_or((-1, -1, -1)),
                                 )])
                             })
                             .outarg::<(i32, i32, i32, i32), _>("reply"),
@@ -88,10 +86,9 @@ impl Server {
                 timing.line_index,
                 timing.line_char_from_index,
                 timing.line_char_to_index,
-                TryInto::<i32>::try_into(timing.time.as_millis()).unwrap(),
             ));
         } else {
-            s = s.append1((-1, -1, -1, -1));
+            s = s.append1((-1, -1, -1));
         }
 
         let value_changed = {
