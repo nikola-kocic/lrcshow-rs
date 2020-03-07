@@ -69,7 +69,8 @@ impl<'a> LrcTimedTextState<'a> {
 
     fn on_position_advanced(&mut self, current_position: Duration) -> Option<&'a LyricsTiming> {
         if let Some(timed_text) = self.next {
-            if current_position >= (timed_text.time - (REFRESH_EVERY / 2)) {
+            let subtract = std::cmp::min(REFRESH_EVERY / 2, timed_text.time);
+            if current_position >= timed_text.time - subtract {
                 self.current = Some(timed_text);
                 self.next = self.iter.next();
                 debug!(

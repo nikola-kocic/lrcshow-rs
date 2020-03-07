@@ -178,8 +178,14 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
                 if offset_ms != 0 {
                     for timing in &mut t.timings {
                         let prev_time_ms: i64 = timing.time.as_millis().try_into().unwrap();
-                        timing.time =
-                            Duration::from_millis((prev_time_ms + offset_ms).try_into().unwrap());
+                        timing.time = Duration::from_millis(
+                            (prev_time_ms + offset_ms).try_into().map_err(|_| {
+                                format!(
+                                    "Cannot apply offset {} to value {}",
+                                    offset_ms, prev_time_ms
+                                )
+                            })?,
+                        );
                     }
                 }
                 timed_texts_lines.push(t);
