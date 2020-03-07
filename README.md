@@ -21,6 +21,8 @@ Player communicates via D-Bus.
 ### D-Bus Methods
 Methods are on object path `/com/github/nikola_kocic/lrcshow_rs/Lyrics` and interface `com.github.nikola_kocic.lrcshow_rs.Lyrics`.
 
+Note: indexes are indexes into UTF-8 encoded string.
+
 * **GetCurrentLyrics() -> a{s}**
 
   Get lyrics for current song.
