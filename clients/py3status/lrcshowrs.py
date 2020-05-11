@@ -61,33 +61,27 @@ class SingleLineFormatter:
 
         active_segment = self.lrc_info.active_segment
 
+        chars_before = 20
+        max_width = 110
         active_line_start_index = self.line_index_to_single_line_index_mapping[active_segment.line_index]
+        active_start_index = active_line_start_index + active_segment.line_char_from_index
+        active_end_index = active_line_start_index + active_segment.line_char_to_index
         active_line_end_index = self.line_index_to_single_line_index_mapping[active_segment.line_index + 1]  # There should always be +1
 
-        active_line_len = active_line_end_index - active_line_start_index
-        remaining_len_after = len(self.single_line) - active_line_end_index
-        max_width = 110
-        remaining_total_len = max_width - active_line_len
-        desired_min_width_after = min(remaining_total_len, max(20, int((remaining_total_len * 3) / 4)))
+        text_before_start_index = max(chars_before, active_start_index - chars_before)
+        text_before = self.single_line[text_before_start_index:active_start_index].decode(encoding='utf-8')
+        if active_start_index - chars_before < 0:
+            text_before = " " * abs(active_start_index - chars_before) + text_before
+        active = self.single_line[active_start_index:active_end_index].decode(encoding='utf-8')
+        post_active = self.single_line[active_end_index:active_line_end_index].decode(encoding='utf-8')
+        len_sum1 = len(text_before) + len(pre_active) + len(pre_active)  + len(active) + len(post_active)
+        text_after_len = max_width - len_sum1
+        assert text_after_len > 0
+        text_after = self.single_line[active_line_end_index:active_line_end_index + text_after_len].decode(encoding='utf-8')
 
-        if remaining_len_after < remaining_total_len:  # We are near end, show as much text before active as we can
-            text_after = self.single_line[active_line_end_index:].decode(encoding='utf-8')
-            text_before_start_index = max(0, active_line_start_index - remaining_total_len + len(text_after))
-            text_before = self.single_line[text_before_start_index:active_line_start_index].decode(encoding='utf-8')
-        else:
-            desired_width_before = remaining_total_len - desired_min_width_after
-            text_before_start_index = max(0, active_line_start_index - desired_width_before)
-            text_before = self.single_line[text_before_start_index:active_line_start_index].decode(encoding='utf-8')
-            text_after_len = remaining_total_len - len(text_before)
-            assert text_after_len > 0
-            text_after = self.single_line[active_line_end_index:active_line_end_index + text_after_len].decode(encoding='utf-8')
-
-        active_start_index = active_line_start_index + active_segment.line_char_from_index
-        post_active_start_index = active_line_start_index + active_segment.line_char_to_index
-
-        pre_active = self.single_line[active_line_start_index:active_start_index].decode(encoding='utf-8')
-        active = self.single_line[active_start_index:post_active_start_index].decode(encoding='utf-8')
-        post_active = self.single_line[post_active_start_index:active_line_end_index].decode(encoding='utf-8')
+        total_len = len_sum1 + len(text_after)
+        if total_len < max_width:
+            text_after = text_after + (" " * (max_width - total_len))
 
         ret = (text_before, pre_active, active, post_active, text_after)
         self.logger("{}".format(ret))
