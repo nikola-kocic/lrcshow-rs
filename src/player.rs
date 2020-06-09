@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,11 +61,14 @@ fn parse_player_metadata<T: arg::RefArg>(
         None => return Ok(None),
     };
 
-    let file_path_url = Url::parse(&file_path_encoded)
-        .map_err(|e| format!("invalid format of url metadata: {}", e.to_string()))?;
-    let file_path = file_path_url
-        .to_file_path()
-        .map_err(|_| format!("invalid format of url metadata: {}", file_path_url))?;
+    // Try parsing path as URL, if it fails, it's probably the absolute path
+    let file_path = match Url::parse(&file_path_encoded) {
+        Ok(file_path_url) => file_path_url
+            .to_file_path()
+            .map_err(|_| format!("invalid format of url metadata: {}", file_path_url))?,
+        Err(_) => PathBuf::from(file_path_encoded),
+    };
+
     let album = metadata_map
         .get("xesam:album")
         .map(|v| {
@@ -311,6 +315,17 @@ fn get_dbus_properties_changed_handler(
                             .send(TimedEvent {
                                 instant,
                                 event: Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)),
+                            })
+                            .unwrap();
+                    }
+                    "Position" => {
+                        let position_us = v.as_i64().unwrap();
+                        sender
+                            .send(TimedEvent {
+                                instant,
+                                event: Event::PlayerEvent(PlayerEvent::Seeked {
+                                    position: Duration::from_micros(position_us as u64),
+                                }),
                             })
                             .unwrap();
                     }
