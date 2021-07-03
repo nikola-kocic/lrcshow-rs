@@ -239,7 +239,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 }
 
 fn main() {
-    env_logger::from_env(env_logger::Env::default().default_filter_or("info"))
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .write_style(env_logger::WriteStyle::Auto)
         .format_module_path(false)
         .format_timestamp_nanos()
