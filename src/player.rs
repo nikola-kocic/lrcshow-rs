@@ -375,7 +375,14 @@ fn query_player_owner_name<'a>(
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
     if !all_player_buses.contains(&player_bus) {
-        info!("all players = {:?}", all_player_buses);
+        info!(
+            "Specified player not running. Found the following players: {}",
+            all_player_buses
+                .iter()
+                .map(|s| s.trim_start_matches(MPRIS2_PREFIX))
+                .collect::<Vec<&str>>()
+                .join(", ")
+        );
         return Ok(None);
     }
 

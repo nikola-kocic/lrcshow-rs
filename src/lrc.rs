@@ -63,14 +63,16 @@ pub struct LrcFile {
 
 fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let minutes_str = &time_str[0..2];
-    let minutes = u64::from_str_radix(&minutes_str, 10)
+    let minutes = minutes_str
+        .parse::<u64>()
         .map_err(|e| format!("Bad minutes format ({}): {}", minutes_str, e.to_string()))?;
 
     if &time_str[2..3] != ":" {
         return Err("Bad seconds divider".to_owned());
     }
     let seconds_str = &time_str[3..5];
-    let seconds = u64::from_str_radix(&seconds_str, 10)
+    let seconds = seconds_str
+        .parse::<u64>()
         .map_err(|e| format!("Bad seconds format ({}): {}", seconds_str, e.to_string()))?;
 
     let ms_divider_char = &time_str[5..6];
@@ -78,7 +80,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
         return Err(format!("Bad milliseconds divider: {}", ms_divider_char));
     }
     let centiseconds_str = &time_str[6..8];
-    let centiseconds = u64::from_str_radix(&centiseconds_str, 10).map_err(|e| {
+    let centiseconds = centiseconds_str.parse::<u64>().map_err(|e| {
         format!(
             "Bad centiseconds format ({}): {}",
             centiseconds_str,
@@ -110,7 +112,7 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
                 let offset_val_str = parts.next().ok_or_else(|| {
                     format!("Wrong offset tag format (missing ':'): {}", tag_content)
                 })?;
-                let offset = i64::from_str_radix(&offset_val_str, 10).map_err(|e| {
+                let offset = offset_val_str.parse::<i64>().map_err(|e| {
                     format!("Bad offset format ({}): {}", offset_val_str, e.to_string())
                 })?;
                 Ok(Tag::Offset(offset))
