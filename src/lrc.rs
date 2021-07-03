@@ -17,10 +17,10 @@ fn lines_from_file<P: AsRef<Path>>(filepath: P) -> Result<Vec<String>, String> {
         .collect()
 }
 
-pub struct TimedLocation {
-    pub time: Duration,
-    pub line_char_from_index: i32, // from this character in line
-    pub line_char_to_index: i32,   // to this character in line
+struct TimedLocation {
+    time: Duration,
+    line_char_from_index: i32, // from this character in line
+    line_char_to_index: i32,   // to this character in line
 }
 
 impl fmt::Debug for TimedLocation {
@@ -36,9 +36,9 @@ impl fmt::Debug for TimedLocation {
 }
 
 #[derive(Debug)]
-pub struct TimedText {
-    pub text: String,
-    pub timings: Vec<TimedLocation>,
+struct TimedText {
+    text: String,
+    timings: Vec<TimedLocation>,
 }
 
 #[derive(Debug)]
@@ -58,7 +58,7 @@ enum LrcLine {
 #[derive(Debug)]
 pub struct LrcFile {
     metadata: Vec<(String, String)>,
-    pub timed_texts_lines: Vec<TimedText>,
+    timed_texts_lines: Vec<TimedText>,
 }
 
 fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
