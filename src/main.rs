@@ -1,4 +1,5 @@
 mod events;
+mod formatters;
 mod lrc;
 mod lrc_file_manager;
 mod player;
@@ -20,6 +21,7 @@ use crate::events::{
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
 use crate::player::{get_connection_proxy, PlayerNotifications};
+use crate::formatters::{format_duration};
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -83,13 +85,6 @@ impl<'a> LrcTimedTextState<'a> {
         }
         None
     }
-}
-
-fn format_duration(duration: &Duration) -> String {
-    let total_seconds = duration.as_secs_f64();
-    let minutes = ((total_seconds / 60.0).floor() as i32) % 60;
-    let seconds = total_seconds - f64::from(minutes * 60);
-    format!("{:02}:{:05.2}", minutes, seconds)
 }
 
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
