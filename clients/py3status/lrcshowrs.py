@@ -123,7 +123,7 @@ class LrcReceiver:
 
     def _on_active_lyrics_line_changed(self, data):
         lyrics_position = LrcLineSegmentInfo(data)
-        self.logger("Active lyrics line changed: {}".format(lyrics_position))
+        #self.logger("Active lyrics line changed: {}".format(lyrics_position))
         if self.lrc_info.lines is None:
             self.lrc_info.lines = self._read_lyrics()
         if lyrics_position.line_index < 0:
