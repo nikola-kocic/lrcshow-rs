@@ -79,13 +79,9 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
         return Err(format!("Bad milliseconds divider: {}", ms_divider_char));
     }
     let centiseconds_str = &time_str[6..8];
-    let centiseconds = centiseconds_str.parse::<u64>().map_err(|e| {
-        format!(
-            "Bad centiseconds format ({}): {}",
-            centiseconds_str,
-            e
-        )
-    })?;
+    let centiseconds = centiseconds_str
+        .parse::<u64>()
+        .map_err(|e| format!("Bad centiseconds format ({}): {}", centiseconds_str, e))?;
 
     Ok(Duration::from_micros(
         ((((minutes * 60) + seconds) * 100) + centiseconds) * 10000,
@@ -111,9 +107,9 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
                 let offset_val_str = parts.next().ok_or_else(|| {
                     format!("Wrong offset tag format (missing ':'): {}", tag_content)
                 })?;
-                let offset = offset_val_str.parse::<i64>().map_err(|e| {
-                    format!("Bad offset format ({}): {}", offset_val_str, e)
-                })?;
+                let offset = offset_val_str
+                    .parse::<i64>()
+                    .map_err(|e| format!("Bad offset format ({}): {}", offset_val_str, e))?;
                 Ok(Tag::Offset(offset))
             }
             _ => Ok(Tag::Unknown),
@@ -195,9 +191,7 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
             _ => {}
         }
     }
-    Ok(LrcFile {
-        timed_texts_lines,
-    })
+    Ok(LrcFile { timed_texts_lines })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
