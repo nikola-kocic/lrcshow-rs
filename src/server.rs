@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use dbus::blocking::Connection;
-use dbus::tree::Factory;
+use dbus::blocking::LocalConnection;
 use dbus::Message;
+use dbus_tree::Factory;
 
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -28,7 +28,7 @@ impl Server {
         active_lyrics_lines: Arc<Mutex<Option<Vec<String>>>>,
         current_timing: Arc<Mutex<Option<LyricsTiming>>>,
     ) -> Result<(), dbus::Error> {
-        let mut c = Connection::new_session().unwrap();
+        let c = LocalConnection::new_session().unwrap();
         c.request_name("com.github.nikola_kocic.lrcshow_rs", false, true, false)?;
         let f = Factory::new_fn::<()>();
 
@@ -74,7 +74,11 @@ impl Server {
         }
     }
 
-    pub fn on_active_lyrics_segment_changed(&self, timing: Option<&LyricsTiming>, c: &Connection) {
+    pub fn on_active_lyrics_segment_changed(
+        &self,
+        timing: Option<&LyricsTiming>,
+        c: &LocalConnection,
+    ) {
         let mut s = Message::new_signal(
             "/com/github/nikola_kocic/lrcshow_rs/Daemon",
             "com.github.nikola_kocic.lrcshow_rs.Daemon",
@@ -108,7 +112,7 @@ impl Server {
         }
     }
 
-    pub fn on_lyrics_changed(&self, lines: Option<Vec<String>>, c: &Connection) {
+    pub fn on_lyrics_changed(&self, lines: Option<Vec<String>>, c: &LocalConnection) {
         {
             *self.active_lyrics_lines.lock().unwrap() = lines;
         }

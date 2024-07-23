@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use dbus::blocking::Connection;
+use dbus::blocking::LocalConnection;
 use structopt::StructOpt;
 
 #[allow(unused_imports)]
@@ -100,7 +100,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let lrc_manager_sender = lrc_manager.clone_sender();
     lrc_manager.run_async();
 
-    let c = Connection::new_session().unwrap();
+    let c = LocalConnection::new_session().unwrap();
     let mut player_owner_name: Option<String> = None;
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;

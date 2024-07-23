@@ -136,12 +136,22 @@ checksum = "22ec99545bb0ed0ea7bb9b8e1e9122ea386ff8a48c0922e43f36d45ab09e0e80"
 
 [[package]]
 name = "dbus"
-version = "0.7.1"
+version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "add8dd36d6d34a084220eb9fe216d3e230d52b37c31702e1ffda4fb2d4ef950e"
+checksum = "1bb21987b9fb1613058ba3843121dd18b163b254d8a6e797e144cbac14d96d1b"
 dependencies = [
  "libc",
  "libdbus-sys",
+ "winapi",
+]
+
+[[package]]
+name = "dbus-tree"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f456e698ae8e54575e19ddb1f9b7bce2298568524f215496b248eb9498b4f508"
+dependencies = [
+ "dbus",
 ]
 
 [[package]]
@@ -309,6 +319,7 @@ name = "lrcshow-rs"
 version = "0.5.0"
 dependencies = [
  "dbus",
+ "dbus-tree",
  "env_logger",
  "log",
  "notify",
