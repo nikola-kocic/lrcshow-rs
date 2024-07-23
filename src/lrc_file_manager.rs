@@ -39,26 +39,28 @@ impl LrcManager {
 
     pub fn new(lyric_event_tx: std::sync::mpsc::Sender<TimedEvent>) -> Self {
         let (watcher_tx, watcher_rx) = channel();
-        let watcher = RecommendedWatcher::new(watcher_tx, Duration::from_millis(100)).unwrap();
+        let notify_config =
+            notify::Config::default().with_poll_interval(Duration::from_millis(100));
+        let watcher = RecommendedWatcher::new(watcher_tx, notify_config).unwrap();
 
         let (tx, rx) = channel();
         {
             let tx_clone = tx.clone();
             thread::spawn(move || loop {
                 match watcher_rx.recv() {
-                    Ok(event) => {
+                    Ok(Ok(mut event)) => {
                         debug!("Watcher event: {:?}", event);
-                        match event {
-                            notify::DebouncedEvent::Create(path)
-                            | notify::DebouncedEvent::Write(path)
-                            | notify::DebouncedEvent::NoticeRemove(path)
-                            | notify::DebouncedEvent::Rename(_, path) => {
+                        match event.kind {
+                            notify::EventKind::Create(_)
+                            | notify::EventKind::Modify(_)
+                            | notify::EventKind::Remove(_) => {
+                                let path = event.paths.pop().unwrap();
                                 tx_clone.send(InputEvents::FileChanged(path)).unwrap();
                             }
                             _ => {}
                         }
                     }
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         return;
                     }
                 }
