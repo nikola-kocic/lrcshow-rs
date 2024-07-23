@@ -18,10 +18,10 @@ use log::{debug, error, info, trace, warn};
 use crate::events::{
     Event, LyricsEvent, PlaybackStatus, PlayerEvent, PlayerState, PositionSnapshot, TimedEvent,
 };
+use crate::formatters::format_duration;
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
 use crate::player::{get_connection_proxy, PlayerNotifications};
-use crate::formatters::format_duration;
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
