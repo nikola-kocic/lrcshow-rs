@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use dbus::arg::RefArg;
 use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
 use dbus::blocking::BlockingSender;
-use dbus::blocking::{Connection, Proxy};
+use dbus::blocking::{LocalConnection, Proxy};
 use dbus::{arg, Message};
 use url::Url;
 
@@ -23,14 +23,14 @@ const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
 type DbusStringMap = HashMap<String, arg::Variant<Box<dyn arg::RefArg>>>;
-pub type ConnectionProxy<'a> = Proxy<'a, &'a Connection>;
+pub type ConnectionProxy<'a> = Proxy<'a, &'a LocalConnection>;
 
 fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String>
 where
-    for<'b> T: dbus::arg::Get<'b>,
+    for<'b> T: dbus::arg::Get<'b> + 'static,
 {
-    Ok(p.get("org.mpris.MediaPlayer2.Player", name).unwrap())
-    // .map_err(|e| e.to_string())
+    p.get("org.mpris.MediaPlayer2.Player", name)
+        .map_err(|e| e.to_string())
 }
 
 pub fn query_player_position(p: &ConnectionProxy) -> Result<Duration, String> {
@@ -101,7 +101,7 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     }
 }
 
-fn query_unique_owner_name(c: &Connection, bus_name: &str) -> Result<String, String> {
+fn query_unique_owner_name(c: &LocalConnection, bus_name: &str) -> Result<String, String> {
     let get_name_owner = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
@@ -119,7 +119,7 @@ fn query_unique_owner_name(c: &Connection, bus_name: &str) -> Result<String, Str
         })
 }
 
-fn query_all_player_buses(c: &Connection) -> Result<Vec<String>, String> {
+fn query_all_player_buses(c: &LocalConnection) -> Result<Vec<String>, String> {
     let list_names = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
@@ -217,7 +217,7 @@ impl arg::ReadAll for DbusNameOwnedChanged {
 }
 
 pub fn get_connection_proxy<'a>(
-    c: &'a Connection,
+    c: &'a LocalConnection,
     player_owner_name: &'a str,
 ) -> ConnectionProxy<'a> {
     debug!("get_connection_proxy with {}", player_owner_name);
@@ -226,8 +226,8 @@ pub fn get_connection_proxy<'a>(
 
 fn get_mediaplayer2_seeked_handler(
     sender: Sender<TimedEvent>,
-) -> impl Fn(MediaPlayer2SeekedHappened, &Connection) -> bool {
-    move |e: MediaPlayer2SeekedHappened, _: &Connection| {
+) -> impl Fn(MediaPlayer2SeekedHappened, &LocalConnection, &Message) -> bool {
+    move |e: MediaPlayer2SeekedHappened, _: &LocalConnection, _: &Message| {
         let instant = Instant::now();
         debug!("Seek happened: {:?}", e);
         if e.position_us < 0 {
@@ -250,8 +250,8 @@ fn get_mediaplayer2_seeked_handler(
 
 fn get_dbus_properties_changed_handler(
     sender: Sender<TimedEvent>,
-) -> impl Fn(DbusPropertiesChangedHappened, &Connection) -> bool {
-    move |e: DbusPropertiesChangedHappened, _: &Connection| {
+) -> impl Fn(DbusPropertiesChangedHappened, &LocalConnection, &Message) -> bool {
+    move |e: DbusPropertiesChangedHappened, _: &LocalConnection, _: &Message| {
         let instant = Instant::now();
         debug!("DBus.Properties happened: {:?}", e);
         if e.interface_name == "org.mpris.MediaPlayer2.Player" {
@@ -316,8 +316,8 @@ enum PlayerLifetimeEvent {
 fn get_dbus_name_owned_changed_handler(
     sender: Sender<PlayerLifetimeEvent>,
     player_bus: String,
-) -> impl Fn(DbusNameOwnedChanged, &Connection) -> bool {
-    move |e: DbusNameOwnedChanged, _: &Connection| {
+) -> impl Fn(DbusNameOwnedChanged, &LocalConnection, &Message) -> bool {
+    move |e: DbusNameOwnedChanged, _: &LocalConnection, _: &Message| {
         // debug!("DbusNameOwnedChanged happened: {:?}", e);
         if e.name == player_bus && e.old_owner.is_empty() {
             sender.send(PlayerLifetimeEvent::PlayerShutDown).unwrap();
@@ -329,7 +329,7 @@ fn get_dbus_name_owned_changed_handler(
 }
 
 fn query_player_owner_name<'a>(
-    c: &'a Connection,
+    c: &'a LocalConnection,
     player: &'a str,
 ) -> Result<Option<String>, String> {
     let all_player_buses = query_all_player_buses(c)?;
@@ -353,7 +353,7 @@ fn query_player_owner_name<'a>(
 }
 
 fn subscribe<'a>(
-    c: &'a Connection,
+    c: &'a LocalConnection,
     player_owner_name: &'a str,
     sender: &Sender<TimedEvent>,
 ) -> Result<(), String> {
@@ -374,7 +374,7 @@ fn subscribe<'a>(
 }
 
 fn subscribe_to_player_start_stop(
-    c: &Connection,
+    c: &LocalConnection,
     player: &str,
     sender: &Sender<PlayerLifetimeEvent>,
 ) -> Result<(), String> {
@@ -405,7 +405,7 @@ impl PlayerNotifications {
 
     fn run_sync(&self, player: String) {
         let (tx, rx) = channel::<PlayerLifetimeEvent>();
-        let mut c = Connection::new_session().unwrap();
+        let c = LocalConnection::new_session().unwrap();
         subscribe_to_player_start_stop(&c, &player, &tx).unwrap();
         tx.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
         loop {
