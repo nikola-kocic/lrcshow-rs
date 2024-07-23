@@ -69,46 +69,7 @@ fn parse_player_metadata<T: arg::RefArg>(
         Err(_) => PathBuf::from(file_path_encoded),
     };
 
-    let album = metadata_map
-        .get("xesam:album")
-        .map(|v| {
-            v.as_str()
-                .ok_or("album metadata should be string")
-                .map(|x| x.to_string())
-        })
-        .transpose()?;
-    let title = metadata_map["xesam:title"]
-        .as_str()
-        .ok_or("title metadata should be string")?
-        .to_string();
-    let length = metadata_map["mpris:length"]
-        .as_i64()
-        .ok_or("length metadata should be i64")?;
-    let artists = metadata_map
-        .get("xesam:artist")
-        .map(|v| {
-            v.as_iter()
-                .ok_or("artist metadata should be iterator")?
-                .next()
-                .ok_or("artist metadata should contain at least one entry")?
-                .as_iter()
-                .ok_or("artist metadata should have nested iterator")?
-                .map(|x| {
-                    Ok(x.as_str()
-                        .ok_or("artist metadata values should be string")?
-                        .to_string())
-                })
-                .collect::<Result<Vec<String>, &'static str>>()
-        })
-        .transpose()?;
-
-    Ok(Some(Metadata {
-        album,
-        title,
-        artists,
-        file_path,
-        length,
-    }))
+    Ok(Some(Metadata { file_path }))
 }
 
 fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String> {

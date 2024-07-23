@@ -12,11 +12,7 @@ pub enum PlaybackStatus {
 
 #[derive(Clone, Debug)]
 pub struct Metadata {
-    pub album: Option<String>,
-    pub title: String,
-    pub artists: Option<Vec<String>>,
     pub file_path: PathBuf,
-    pub length: i64,
 }
 
 #[derive(Debug)]
