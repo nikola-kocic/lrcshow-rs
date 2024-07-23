@@ -64,7 +64,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let minutes_str = &time_str[0..2];
     let minutes = minutes_str
         .parse::<u64>()
-        .map_err(|e| format!("Bad minutes format ({}): {}", minutes_str, e.to_string()))?;
+        .map_err(|e| format!("Bad minutes format ({}): {}", minutes_str, e))?;
 
     if &time_str[2..3] != ":" {
         return Err("Bad seconds divider".to_owned());
@@ -72,7 +72,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let seconds_str = &time_str[3..5];
     let seconds = seconds_str
         .parse::<u64>()
-        .map_err(|e| format!("Bad seconds format ({}): {}", seconds_str, e.to_string()))?;
+        .map_err(|e| format!("Bad seconds format ({}): {}", seconds_str, e))?;
 
     let ms_divider_char = &time_str[5..6];
     if ms_divider_char != "." && ms_divider_char != ":" {
@@ -83,7 +83,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
         format!(
             "Bad centiseconds format ({}): {}",
             centiseconds_str,
-            e.to_string()
+            e
         )
     })?;
 
@@ -112,7 +112,7 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
                     format!("Wrong offset tag format (missing ':'): {}", tag_content)
                 })?;
                 let offset = offset_val_str.parse::<i64>().map_err(|e| {
-                    format!("Bad offset format ({}): {}", offset_val_str, e.to_string())
+                    format!("Bad offset format ({}): {}", offset_val_str, e)
                 })?;
                 Ok(Tag::Offset(offset))
             }

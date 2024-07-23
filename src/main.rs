@@ -21,7 +21,7 @@ use crate::events::{
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
 use crate::player::{get_connection_proxy, PlayerNotifications};
-use crate::formatters::{format_duration};
+use crate::formatters::format_duration;
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -94,7 +94,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
     let (sender, receiver) = channel::<TimedEvent>();
 
     let player_notifs = PlayerNotifications::new(sender.clone());
-    player_notifs.run_async(&player);
+    player_notifs.run_async(player);
 
     let lrc_manager = LrcManager::new(sender);
     let lrc_manager_sender = lrc_manager.clone_sender();
@@ -157,7 +157,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                                 position_snapshot: PositionSnapshot {
                                     position: player::query_player_position(&get_connection_proxy(
                                         &c,
-                                        &player_owner_name.as_ref().unwrap(),
+                                        player_owner_name.as_ref().unwrap(),
                                     ))
                                     .unwrap(),
                                     instant: Instant::now(),
@@ -170,7 +170,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         LrcManager::change_watched_path(
                             metadata
                                 .as_ref()
-                                .map(|m| get_lrc_filepath(m))
+                                .map(get_lrc_filepath)
                                 .or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
@@ -194,7 +194,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         LrcManager::change_watched_path(
                             player_state
                                 .as_ref()
-                                .and_then(|p| p.metadata.as_ref().map(|m| get_lrc_filepath(m)))
+                                .and_then(|p| p.metadata.as_ref().map(get_lrc_filepath))
                                 .or_else(|| lrc_filepath.clone()),
                             &lrc_manager_sender,
                         );
@@ -215,7 +215,7 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
             lrc_state = lyrics.as_ref().and_then(|l| {
                 player_state
                     .as_ref()
-                    .map(|p| LrcTimedTextState::new(&l, p.current_position()))
+                    .map(|p| LrcTimedTextState::new(l, p.current_position()))
             });
             let timed_text = lrc_state.as_ref().and_then(|l| l.current);
             server.on_active_lyrics_segment_changed(timed_text, &c);

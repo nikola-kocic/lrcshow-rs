@@ -264,7 +264,7 @@ fn get_dbus_properties_changed_handler(
                             .send(TimedEvent {
                                 instant,
                                 event: Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
-                                    parse_playback_status(&playback_status),
+                                    parse_playback_status(playback_status),
                                 )),
                             })
                             .unwrap();
@@ -332,7 +332,7 @@ fn query_player_owner_name<'a>(
     c: &'a Connection,
     player: &'a str,
 ) -> Result<Option<String>, String> {
-    let all_player_buses = query_all_player_buses(&c)?;
+    let all_player_buses = query_all_player_buses(c)?;
 
     let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
     if !all_player_buses.contains(&player_bus) {
@@ -347,7 +347,7 @@ fn query_player_owner_name<'a>(
         return Ok(None);
     }
 
-    let player_owner_name = query_unique_owner_name(&c, &player_bus)?;
+    let player_owner_name = query_unique_owner_name(c, &player_bus)?;
     debug!("player_owner_name = {:?}", player_owner_name);
     Ok(Some(player_owner_name))
 }
@@ -357,7 +357,7 @@ fn subscribe<'a>(
     player_owner_name: &'a str,
     sender: &Sender<TimedEvent>,
 ) -> Result<(), String> {
-    let p = get_connection_proxy(c, &player_owner_name);
+    let p = get_connection_proxy(c, player_owner_name);
 
     p.match_signal(get_dbus_properties_changed_handler(sender.clone()))
         .map_err(|e| e.to_string())?;
@@ -373,8 +373,8 @@ fn subscribe<'a>(
     Ok(())
 }
 
-fn subscribe_to_player_start_stop<'a>(
-    c: &'a Connection,
+fn subscribe_to_player_start_stop(
+    c: &Connection,
     player: &str,
     sender: &Sender<PlayerLifetimeEvent>,
 ) -> Result<(), String> {
