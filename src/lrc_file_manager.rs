@@ -78,7 +78,7 @@ impl LrcManager {
             let lyrics = {
                 if let Some(file_path) = &self.lrc_filepath {
                     if file_path.is_file() {
-                        let lrc_file = parse_lrc_file(&file_path)
+                        let lrc_file = parse_lrc_file(file_path)
                             .map_err(|e| error!("Parsing lrc file {:?} failed: {}", file_path, e))
                             .ok();
                         if lrc_file.is_some() {
@@ -115,7 +115,7 @@ impl LrcManager {
                         self.watcher.unwatch(old_folder_path).unwrap();
                         debug!("Stopped watching {:?} for changes", old_folder_path);
                     }
-                    self.lrc_filepath = file_path.clone();
+                    self.lrc_filepath.clone_from(&file_path);
                     if let Some(new_file_path) = &self.lrc_filepath {
                         let new_folder_path = new_file_path.parent().unwrap();
                         self.watcher
