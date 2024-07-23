@@ -57,7 +57,6 @@ enum LrcLine {
 
 #[derive(Debug)]
 pub struct LrcFile {
-    metadata: Vec<(String, String)>,
     timed_texts_lines: Vec<TimedText>,
 }
 
@@ -197,7 +196,6 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
         }
     }
     Ok(LrcFile {
-        metadata: Vec::new(),
         timed_texts_lines,
     })
 }
