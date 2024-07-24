@@ -98,6 +98,9 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
 
     let lrc_manager = LrcManager::new(sender);
     let lrc_manager_sender = lrc_manager.clone_sender();
+    if lrc_filepath.is_some() {
+        LrcManager::change_watched_path(lrc_filepath.clone(), &lrc_manager_sender);
+    }
     lrc_manager.run_async();
 
     let c = LocalConnection::new_session().unwrap();
@@ -167,13 +170,12 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         }
                     }
                     Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
-                        LrcManager::change_watched_path(
-                            metadata
-                                .as_ref()
-                                .map(get_lrc_filepath)
-                                .or_else(|| lrc_filepath.clone()),
-                            &lrc_manager_sender,
-                        );
+                        if lrc_filepath.is_none() {
+                            LrcManager::change_watched_path(
+                                metadata.as_ref().map(get_lrc_filepath),
+                                &lrc_manager_sender,
+                            );
+                        }
                         if let Some(ref mut p) = player_state {
                             p.metadata = metadata;
                         }
@@ -191,13 +193,14 @@ fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
                         ); // TODO: This is often crashing on player restart
 
                         player_owner_name = Some(n);
-                        LrcManager::change_watched_path(
-                            player_state
-                                .as_ref()
-                                .and_then(|p| p.metadata.as_ref().map(get_lrc_filepath))
-                                .or_else(|| lrc_filepath.clone()),
-                            &lrc_manager_sender,
-                        );
+                        if lrc_filepath.is_none() {
+                            LrcManager::change_watched_path(
+                                player_state
+                                    .as_ref()
+                                    .and_then(|p| p.metadata.as_ref().map(get_lrc_filepath)),
+                                &lrc_manager_sender,
+                            );
+                        }
                     }
                     Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
                         lrc_state = None; // will be asigned after event processing
