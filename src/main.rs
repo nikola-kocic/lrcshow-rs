@@ -88,8 +88,7 @@ impl<'a> LrcTimedTextState<'a> {
 }
 
 fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
-    let server = server::Server::new();
-    server.run_async();
+    let server = server::run_async();
 
     let (sender, receiver) = channel::<TimedEvent>();
 
