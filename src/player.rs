@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
@@ -6,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dbus::arg::RefArg;
-use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+use dbus::blocking::stdintf::org_freedesktop_dbus::{Properties, PropertiesPropertiesChanged};
 use dbus::blocking::BlockingSender;
 use dbus::blocking::{LocalConnection, Proxy};
 use dbus::{arg, Message};
@@ -22,8 +21,10 @@ use crate::events::{
 const MPRIS2_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
-type DbusStringMap = HashMap<String, arg::Variant<Box<dyn arg::RefArg>>>;
+const MPRIS2_METADATA_FILE_URI: &str = "xesam:url";
+
 pub type ConnectionProxy<'a> = Proxy<'a, &'a LocalConnection>;
+type DbusVariantRefArg = dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>;
 
 fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String>
 where
@@ -45,35 +46,38 @@ fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, S
     query_player_property::<String>(p, "PlaybackStatus").map(|v| parse_playback_status(&v))
 }
 
-fn parse_player_metadata<T: arg::RefArg>(
-    metadata_map: HashMap<String, T>,
-) -> Result<Option<Metadata>, String> {
-    trace!("metadata_map = {:#?}", metadata_map);
+fn parse_player_metadata(metadata: DbusVariantRefArg) -> Result<Option<Metadata>, String> {
+    let mut file_path_uri: Option<&str> = None;
 
-    let file_path_encoded = match metadata_map.get("xesam:url") {
-        Some(url) => url
-            .as_str()
-            .ok_or("url metadata should be string")?
-            .to_string(),
-
+    let mut metadata_iter = metadata.as_iter().unwrap();
+    while let Some(key_arg) = metadata_iter.next() {
+        let key = key_arg.as_str().unwrap();
+        let value_arg = metadata_iter.next().unwrap();
+        if key == MPRIS2_METADATA_FILE_URI {
+            let uri = value_arg.as_str().ok_or("url metadata should be string")?;
+            file_path_uri = Some(uri);
+        }
+    }
+    trace!("file_path_uri = {:#?}", file_path_uri);
+    let Some(file_path_uri) = file_path_uri else {
         // If playlist has reached end, new metadata event is sent,
         // but it doesn't contain any of the following keys
-        None => return Ok(None),
+        return Ok(None);
     };
 
     // Try parsing path as URL, if it fails, it's probably the absolute path
-    let file_path = match Url::parse(&file_path_encoded) {
+    let file_path = match Url::parse(file_path_uri) {
         Ok(file_path_url) => file_path_url
             .to_file_path()
             .map_err(|_| format!("invalid format of url metadata: {}", file_path_url))?,
-        Err(_) => PathBuf::from(file_path_encoded),
+        Err(_) => PathBuf::from(file_path_uri),
     };
 
     Ok(Some(Metadata { file_path }))
 }
 
 fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String> {
-    query_player_property::<DbusStringMap>(p, "Metadata").and_then(parse_player_metadata)
+    query_player_property::<DbusVariantRefArg>(p, "Metadata").and_then(parse_player_metadata)
 }
 
 pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
@@ -137,44 +141,6 @@ fn query_all_player_buses(c: &LocalConnection) -> Result<Vec<String>, String> {
         .filter(|name| name.starts_with(MPRIS2_PREFIX))
         .map(|str_ref| str_ref.to_owned())
         .collect())
-}
-
-#[allow(clippy::redundant_allocation)]
-fn get_message_item_dict(
-    a: &arg::Variant<Box<dyn arg::RefArg>>,
-) -> HashMap<String, Box<&dyn arg::RefArg>> {
-    let mut it = a.as_iter().unwrap();
-    let d_variant = it.next().unwrap();
-    let d_it = d_variant.as_iter().unwrap();
-    let v = d_it.collect::<Vec<_>>();
-    v.chunks(2)
-        .map(|c| {
-            let key = c[0].as_str().unwrap();
-            (key.to_string(), Box::new(c[1]))
-        })
-        .collect()
-}
-
-#[derive(Debug)]
-pub struct DbusPropertiesChangedHappened {
-    pub interface_name: String,
-    pub changed_properties: DbusStringMap,
-    pub invalidated_properties: Vec<String>,
-}
-
-impl dbus::message::SignalArgs for DbusPropertiesChangedHappened {
-    const NAME: &'static str = "PropertiesChanged";
-    const INTERFACE: &'static str = "org.freedesktop.DBus.Properties";
-}
-
-impl arg::ReadAll for DbusPropertiesChangedHappened {
-    fn read(i: &mut arg::Iter) -> Result<Self, arg::TypeMismatchError> {
-        Ok(Self {
-            interface_name: i.read()?,
-            changed_properties: i.read()?,
-            invalidated_properties: i.read()?,
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -251,12 +217,12 @@ fn get_mediaplayer2_seeked_handler(
 
 fn get_dbus_properties_changed_handler(
     sender: Sender<TimedEvent>,
-) -> impl Fn(DbusPropertiesChangedHappened, &LocalConnection, &Message) -> bool {
-    move |e: DbusPropertiesChangedHappened, _: &LocalConnection, _: &Message| {
+) -> impl Fn(PropertiesPropertiesChanged, &LocalConnection, &Message) -> bool {
+    move |e: PropertiesPropertiesChanged, _: &LocalConnection, _: &Message| {
         let instant = Instant::now();
         debug!("DBus.Properties happened: {:?}", e);
         if e.interface_name == "org.mpris.MediaPlayer2.Player" {
-            for (k, v) in &e.changed_properties {
+            for (k, v) in e.changed_properties {
                 match k.as_ref() {
                     "PlaybackStatus" => {
                         let playback_status = v.as_str().unwrap();
@@ -271,8 +237,7 @@ fn get_dbus_properties_changed_handler(
                             .unwrap();
                     }
                     "Metadata" => {
-                        let metadata_map = get_message_item_dict(v);
-                        let metadata = parse_player_metadata(metadata_map).unwrap();
+                        let metadata = parse_player_metadata(v).unwrap();
                         sender
                             .send(TimedEvent {
                                 instant,
@@ -294,9 +259,7 @@ fn get_dbus_properties_changed_handler(
                     "Volume" => {}
                     _ => {
                         warn!("Unknown PropertiesChanged event:");
-                        for p in &e.changed_properties {
-                            warn!("    changed_property = {:?}", p);
-                        }
+                        warn!("    changed_property {} = {:?}", k, v);
                         warn!(
                             "    invalidated_properties = {:?}",
                             e.invalidated_properties
