@@ -142,10 +142,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dbus-tree"
-version = "0.9.2"
+name = "dbus-crossroads"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f456e698ae8e54575e19ddb1f9b7bce2298568524f215496b248eb9498b4f508"
+checksum = "3a4c83437187544ba5142427746835061b330446ca8902eabd70e4afb8f76de0"
 dependencies = [
  "dbus",
 ]
@@ -297,7 +297,7 @@ version = "0.5.0"
 dependencies = [
  "clap",
  "dbus",
- "dbus-tree",
+ "dbus-crossroads",
  "env_logger",
  "log",
  "notify",

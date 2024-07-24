@@ -7,7 +7,7 @@ version = "0.5.0"
 [dependencies]
 clap = {version = "4.5.10", features = ["derive"]}
 dbus = "0.9.7"
-dbus-tree = "0.9.2"
+dbus-crossroads = "0.5.2"
 env_logger = {version = "0.11.0", default-features = false, features = ["auto-color", "humantime"]}
 log = "0.4.8"
 notify = "6.1.1"
