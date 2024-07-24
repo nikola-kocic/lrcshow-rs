@@ -1,10 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use dbus::blocking::LocalConnection;
+use dbus::blocking::{Connection, LocalConnection};
 use dbus::Message;
-use dbus_tree::Factory;
+use dbus_crossroads::{Context, Crossroads};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
@@ -28,50 +27,47 @@ impl Server {
         active_lyrics_lines: Arc<Mutex<Option<Vec<String>>>>,
         current_timing: Arc<Mutex<Option<LyricsTiming>>>,
     ) -> Result<(), dbus::Error> {
-        let c = LocalConnection::new_session().unwrap();
+        let c = Connection::new_session()?;
         c.request_name("com.github.nikola_kocic.lrcshow_rs", false, true, false)?;
-        let f = Factory::new_fn::<()>();
+        let mut cr = Crossroads::new();
 
-        let tree = f.tree(()).add(
-            f.object_path("/com/github/nikola_kocic/lrcshow_rs/Lyrics", ())
-                .introspectable()
-                .add(
-                    f.interface("com.github.nikola_kocic.lrcshow_rs.Lyrics", ())
-                        .add_m(
-                            f.method("GetCurrentLyrics", (), move |m| {
-                                let v = active_lyrics_lines.lock().unwrap();
-                                debug!("GetCurrentLyrics called");
-                                Ok(vec![m
-                                    .msg
-                                    .method_return()
-                                    .append1(v.as_ref().map(|x| x.as_slice()).unwrap_or(&[]))])
-                            })
-                            .outarg::<&str, _>("reply"),
-                        )
-                        .add_m(
-                            f.method("GetCurrentLyricsPosition", (), move |m| {
-                                let v = current_timing.lock().unwrap();
-                                debug!("GetCurrentLyricsPosition called");
-                                Ok(vec![m.msg.method_return().append1(
-                                    v.as_ref()
-                                        .map(|x| {
-                                            (
-                                                x.line_index,
-                                                x.line_char_from_index,
-                                                x.line_char_to_index,
-                                            )
-                                        })
-                                        .unwrap_or((-1, -1, -1)),
-                                )])
-                            })
-                            .outarg::<(i32, i32, i32, i32), _>("reply"),
-                        ),
-                ),
+        let iface_token = cr.register("com.github.nikola_kocic.lrcshow_rs.Lyrics", |b| {
+            b.method(
+                "GetCurrentLyrics",
+                (),
+                ("reply",),
+                move |_: &mut Context, _: &mut (), ()| -> Result<(Vec<String>,), dbus::MethodErr> {
+                    let v = active_lyrics_lines.lock().unwrap();
+                    debug!("GetCurrentLyrics called");
+                    let reply = v.clone().unwrap_or_default();
+                    Ok((reply,))
+                },
+            );
+            b.method(
+                "GetCurrentLyricsPosition",
+                (),
+                ("reply",),
+                move |_: &mut Context,
+                      _: &mut (),
+                      ()|
+                      -> Result<((i32, i32, i32),), dbus::MethodErr> {
+                    let v = current_timing.lock().unwrap();
+                    debug!("GetCurrentLyricsPosition called");
+                    let reply = v
+                        .as_ref()
+                        .map(|x| (x.line_index, x.line_char_from_index, x.line_char_to_index))
+                        .unwrap_or((-1, -1, -1));
+                    Ok((reply,))
+                },
+            );
+        });
+        cr.insert(
+            "/com/github/nikola_kocic/lrcshow_rs/Lyrics",
+            &[iface_token],
+            (),
         );
-        tree.start_receive(&c);
-        loop {
-            c.process(Duration::from_millis(1000))?;
-        }
+        cr.serve(&c)?;
+        unreachable!()
     }
 
     pub fn on_active_lyrics_segment_changed(
