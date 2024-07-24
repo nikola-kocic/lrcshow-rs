@@ -45,7 +45,7 @@ fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, S
     query_player_property::<String>(p, "PlaybackStatus").map(|v| parse_playback_status(&v))
 }
 
-fn parse_player_metadata<T: RefArg>(metadata: T) -> Result<Option<Metadata>, String> {
+fn parse_player_metadata(metadata: &dyn RefArg) -> Result<Option<Metadata>, String> {
     let mut file_path_uri: Option<&str> = None;
 
     let mut metadata_iter = metadata.as_iter().unwrap();
@@ -76,7 +76,7 @@ fn parse_player_metadata<T: RefArg>(metadata: T) -> Result<Option<Metadata>, Str
 }
 
 fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String> {
-    query_player_property::<Box<dyn RefArg>>(p, "Metadata").and_then(parse_player_metadata)
+    query_player_property::<Box<dyn RefArg>>(p, "Metadata").and_then(|m| parse_player_metadata(&m))
 }
 
 pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
@@ -236,7 +236,7 @@ fn get_dbus_properties_changed_handler(
                             .unwrap();
                     }
                     "Metadata" => {
-                        let metadata = parse_player_metadata(v).unwrap();
+                        let metadata = parse_player_metadata(&v).unwrap();
                         sender
                             .send(TimedEvent {
                                 instant,
