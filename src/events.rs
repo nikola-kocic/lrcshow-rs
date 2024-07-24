@@ -57,6 +57,7 @@ pub enum PlayerEvent {
 pub enum LyricsEvent {
     LyricsChanged {
         lyrics: Option<Lyrics>,
+        #[allow(dead_code)] // TODO
         file_path: Option<PathBuf>,
     },
 }

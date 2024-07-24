@@ -139,6 +139,7 @@ fn query_all_player_buses(c: &LocalConnection) -> Result<Vec<String>, String> {
         .collect())
 }
 
+#[allow(clippy::redundant_allocation)]
 fn get_message_item_dict(
     a: &arg::Variant<Box<dyn arg::RefArg>>,
 ) -> HashMap<String, Box<&dyn arg::RefArg>> {
