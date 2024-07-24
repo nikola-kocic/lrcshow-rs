@@ -24,7 +24,6 @@ const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 const MPRIS2_METADATA_FILE_URI: &str = "xesam:url";
 
 pub type ConnectionProxy<'a> = Proxy<'a, &'a LocalConnection>;
-type DbusVariantRefArg = dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>;
 
 fn query_player_property<T>(p: &ConnectionProxy, name: &str) -> Result<T, String>
 where
@@ -46,7 +45,7 @@ fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, S
     query_player_property::<String>(p, "PlaybackStatus").map(|v| parse_playback_status(&v))
 }
 
-fn parse_player_metadata(metadata: DbusVariantRefArg) -> Result<Option<Metadata>, String> {
+fn parse_player_metadata<T: RefArg>(metadata: T) -> Result<Option<Metadata>, String> {
     let mut file_path_uri: Option<&str> = None;
 
     let mut metadata_iter = metadata.as_iter().unwrap();
@@ -77,7 +76,7 @@ fn parse_player_metadata(metadata: DbusVariantRefArg) -> Result<Option<Metadata>
 }
 
 fn query_player_metadata(p: &ConnectionProxy) -> Result<Option<Metadata>, String> {
-    query_player_property::<DbusVariantRefArg>(p, "Metadata").and_then(parse_player_metadata)
+    query_player_property::<Box<dyn RefArg>>(p, "Metadata").and_then(parse_player_metadata)
 }
 
 pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
