@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
+use clap::Parser;
 use dbus::blocking::LocalConnection;
-use structopt::StructOpt;
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -26,16 +26,16 @@ use crate::player::{get_connection_proxy, PlayerNotifications};
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
 /// Show lyrics
-#[derive(StructOpt, Debug)]
-#[structopt(name = "lrcshow-rs")]
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
 struct Opt {
     /// Lyrics file to use for all songs.
-    /// By default .lrc file next to audio file, with the same filename, will be used, if available.
-    #[structopt(short = "l", long, parse(from_os_str))]
+    /// By default, loads the .lrc file next to audio file, with the matching filename, if available.
+    #[arg(short = 'l', long)]
     lyrics: Option<PathBuf>,
 
     /// Player to use
-    #[structopt(short = "p", long)]
+    #[arg(short = 'p', long)]
     player: String,
 }
 
@@ -240,7 +240,7 @@ fn main() {
         .format_timestamp_nanos()
         .init();
 
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
     let lyrics_filepath = opt.lyrics;
     if Some(false) == lyrics_filepath.as_ref().map(|fp| fp.is_file()) {
         error!("Lyrics path must be a file");
