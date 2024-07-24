@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install required tools
-        run: apt update && apt install -y libdbus-1-dev pkg-config
+        run: sudo apt update && sudo apt install -y libdbus-1-dev pkg-config
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
