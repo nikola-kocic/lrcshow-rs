@@ -10,7 +10,7 @@ pub enum PlaybackStatus {
     Stopped,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Metadata {
     pub file_path: PathBuf,
 }
@@ -44,13 +44,14 @@ impl PlayerState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum PlayerEvent {
     PlayerStarted { player_owner_name: String },
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
     MetadataChange(Option<Metadata>),
+    Unknown { key: String, value: String },
 }
 
 #[derive(Debug)]

@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
@@ -47,17 +48,28 @@ fn query_player_playback_status(p: &ConnectionProxy) -> Result<PlaybackStatus, S
 
 fn parse_player_metadata(metadata: &dyn RefArg) -> Result<Option<Metadata>, String> {
     let mut file_path_uri: Option<&str> = None;
+    debug!("parse_player_metadata");
 
-    let mut metadata_iter = metadata.as_iter().unwrap();
+    let mut metadata_iter = metadata
+        .as_iter()
+        .ok_or("metadata should be an a{sv} map")?;
     while let Some(key_arg) = metadata_iter.next() {
-        let key = key_arg.as_str().unwrap();
-        let value_arg = metadata_iter.next().unwrap();
+        debug!("key = {key_arg:#?}");
+        let key = key_arg.as_str().ok_or(format!(
+            "metadata key should be a string, found: {key_arg:?}"
+        ))?;
+        let value_arg = metadata_iter
+            .next()
+            .ok_or(format!("metadata value for {key} cannot be read"))?;
+        debug!("key = {key}, value = {value_arg:#?}");
         if key == MPRIS2_METADATA_FILE_URI {
-            let uri = value_arg.as_str().ok_or("url metadata should be string")?;
+            let uri = value_arg.as_str().ok_or(format!(
+                "url metadata should be string, found {value_arg:?}"
+            ))?;
             file_path_uri = Some(uri);
         }
     }
-    trace!("file_path_uri = {:#?}", file_path_uri);
+    trace!("file_path_uri = {file_path_uri:#?}");
     let Some(file_path_uri) = file_path_uri else {
         // If playlist has reached end, new metadata event is sent,
         // but it doesn't contain any of the following keys
@@ -214,58 +226,53 @@ fn get_mediaplayer2_seeked_handler(
     }
 }
 
+fn react_on_changed_properties<F: FnMut(PlayerEvent)>(
+    changed_properties: dbus::arg::PropMap,
+    mut f: F,
+) {
+    debug!("react_on_changed_properties: {changed_properties:?}");
+    for (k, v) in changed_properties {
+        match k.as_ref() {
+            "PlaybackStatus" => {
+                let playback_status_str = v.as_str().unwrap();
+                debug!("playback_status = {:?}", playback_status_str);
+                let playback_status = parse_playback_status(playback_status_str);
+                f(PlayerEvent::PlaybackStatusChange(playback_status))
+            }
+            "Metadata" => {
+                let metadata = parse_player_metadata(&v.0).unwrap();
+                f(PlayerEvent::MetadataChange(metadata));
+            }
+            "Position" => {
+                let position_us = v.as_i64().unwrap();
+                let position = Duration::from_micros(u64::try_from(position_us).unwrap());
+                f(PlayerEvent::Seeked { position });
+            }
+            "Volume" => {}
+            _ => {
+                f(PlayerEvent::Unknown {
+                    key: k,
+                    value: format!("{:?}", v),
+                });
+            }
+        }
+    }
+}
+
 fn get_dbus_properties_changed_handler(
     sender: Sender<TimedEvent>,
 ) -> impl Fn(PropertiesPropertiesChanged, &LocalConnection, &Message) -> bool {
     move |e: PropertiesPropertiesChanged, _: &LocalConnection, _: &Message| {
         let instant = Instant::now();
-        debug!("DBus.Properties happened: {:?}", e);
         if e.interface_name == "org.mpris.MediaPlayer2.Player" {
-            for (k, v) in e.changed_properties {
-                match k.as_ref() {
-                    "PlaybackStatus" => {
-                        let playback_status = v.as_str().unwrap();
-                        debug!("playback_status = {:?}", playback_status);
-                        sender
-                            .send(TimedEvent {
-                                instant,
-                                event: Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
-                                    parse_playback_status(playback_status),
-                                )),
-                            })
-                            .unwrap();
-                    }
-                    "Metadata" => {
-                        let metadata = parse_player_metadata(&v).unwrap();
-                        sender
-                            .send(TimedEvent {
-                                instant,
-                                event: Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)),
-                            })
-                            .unwrap();
-                    }
-                    "Position" => {
-                        let position_us = v.as_i64().unwrap();
-                        sender
-                            .send(TimedEvent {
-                                instant,
-                                event: Event::PlayerEvent(PlayerEvent::Seeked {
-                                    position: Duration::from_micros(position_us as u64),
-                                }),
-                            })
-                            .unwrap();
-                    }
-                    "Volume" => {}
-                    _ => {
-                        warn!("Unknown PropertiesChanged event:");
-                        warn!("    changed_property {} = {:?}", k, v);
-                        warn!(
-                            "    invalidated_properties = {:?}",
-                            e.invalidated_properties
-                        );
-                    }
-                }
-            }
+            react_on_changed_properties(e.changed_properties, |player_event| {
+                sender
+                    .send(TimedEvent {
+                        instant,
+                        event: Event::PlayerEvent(player_event),
+                    })
+                    .unwrap();
+            });
         }
         true
     }
@@ -409,5 +416,95 @@ impl PlayerNotifications {
         thread::spawn(move || {
             self.run_sync(&player_string);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use dbus::arg::Variant;
+    use test_log::test;
+
+    #[test]
+    fn test_regular() {
+        // Message {
+        //     Type: Signal,
+        //     Path: "/org/mpris/MediaPlayer2",
+        //     Interface: "org.freedesktop.DBus.Properties",
+        //     Member: "PropertiesChanged",
+        //     Sender: ":1.154",
+        //     Serial: 13,
+        //     Args: [
+        //         "org.mpris.MediaPlayer2.Player",
+        //         {
+        //             "Metadata": Variant(
+        //                 {
+        //                     "mpris:artUrl": Variant("file:///tmp/audacious-temp-75WRR2"),
+        //                     "mpris:trackid": Variant(Path("/org/mpris/MediaPlayer2/CurrentTrack\0")),
+        //                     "xesam:artist": Variant(["Queen"]),
+        //                     "xesam:album": Variant("Greatest Hits II"),
+        //                     "xesam:url": Variant("file:///home/user/music/Queen/--%20Compilations%20--/%281991%29%20Greatest%20Hits%20II/13%20Queen%20-%20The%20Invisible%20Man.mp3"),
+        //                     "mpris:length": Variant(238655000),
+        //                     "xesam:title": Variant("The Invisible Man")
+        //                 }
+        //             )
+        //         },
+        //         []
+        //     ]
+        // }
+
+        let mut test_changed_metadata = dbus::arg::PropMap::new();
+        test_changed_metadata.insert(
+            "mpris:artUrl".to_owned(),
+            Variant(Box::new("file:///tmp/audacious-temp-75WRR2".to_string())),
+        );
+        test_changed_metadata.insert(
+            "mpris:trackid".to_owned(),
+            Variant(Box::new(
+                dbus::strings::Path::from_slice("/org/mpris/MediaPlayer2/CurrentTrack\0").unwrap(),
+            )),
+        );
+        test_changed_metadata.insert(
+            "xesam:artist".to_owned(),
+            Variant(Box::new(vec!["Queen".to_owned()])),
+        );
+        test_changed_metadata.insert(
+            "xesam:album".to_owned(),
+            Variant(Box::new("Greatest Hits II".to_owned())),
+        );
+
+        test_changed_metadata.insert(
+            "xesam:url".to_owned(),
+            Variant(Box::new(
+                "file:///home/user/music/Queen/--%20Compilations%20--/%281991%29%20Greatest%20Hits%20II/13%20Queen%20-%20The%20Invisible%20Man.mp3".to_owned()
+            ))
+        );
+        test_changed_metadata.insert("mpris:length".to_owned(), Variant(Box::new(238655000)));
+
+        test_changed_metadata.insert(
+            "xesam:title".to_owned(),
+            Variant(Box::new("The Invisible Man".to_owned())),
+        );
+
+        let mut test_changed_properties = dbus::arg::PropMap::new();
+        test_changed_properties.insert(
+            "Metadata".to_owned(),
+            Variant(Box::new(test_changed_metadata)),
+        );
+
+        let mut reported_events = Vec::<PlayerEvent>::new();
+        react_on_changed_properties(test_changed_properties, |player_event| {
+            reported_events.push(player_event)
+        });
+
+        assert_eq!(reported_events, vec![
+            PlayerEvent::MetadataChange(Some(Metadata {
+                file_path: PathBuf::from_str(
+                    "/home/user/music/Queen/-- Compilations --/(1991) Greatest Hits II/13 Queen - The Invisible Man.mp3"
+                ).unwrap()
+            }))
+        ]);
     }
 }
