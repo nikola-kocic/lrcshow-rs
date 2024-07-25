@@ -37,7 +37,7 @@ pub struct PlayerState {
 impl PlayerState {
     pub fn current_position(&self) -> Duration {
         if self.playback_status == PlaybackStatus::Playing {
-            self.position_snapshot.position + (Instant::now() - self.position_snapshot.instant)
+            self.position_snapshot.position + self.position_snapshot.instant.elapsed()
         } else {
             self.position_snapshot.position
         }
