@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -97,12 +97,13 @@ impl LrcManager {
             };
 
             self.lyric_event_tx
-                .send(TimedEvent::new(Event::LyricsEvent(
-                    LyricsEvent::LyricsChanged {
+                .send(TimedEvent {
+                    instant: Instant::now(),
+                    event: Event::LyricsEvent(LyricsEvent::LyricsChanged {
                         lyrics,
                         file_path: changed_file_path,
-                    },
-                )))
+                    }),
+                })
                 .unwrap();
         }
     }

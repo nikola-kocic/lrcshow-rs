@@ -71,16 +71,9 @@ pub enum Event {
 }
 
 #[derive(Debug)]
-pub struct TimedEvent {
+pub struct TimedEventBase<T> {
     pub instant: Instant,
-    pub event: Event,
+    pub event: T,
 }
 
-impl TimedEvent {
-    pub fn new(event: Event) -> Self {
-        Self {
-            instant: Instant::now(),
-            event,
-        }
-    }
-}
+pub type TimedEvent = TimedEventBase<Event>;
