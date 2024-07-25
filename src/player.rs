@@ -360,45 +360,15 @@ impl<'a> PlayerNotifications<'a> {
         }
     }
 
-    fn create_dbus_name_owned_changed_handler(
+    fn create_dbus_handler<T>(
         &self,
-    ) -> impl Fn(DBusNameOwnerChanged, &LocalConnection, &Message) -> bool {
+        constructor: impl Fn(T) -> DbusPlayerEvent,
+    ) -> impl Fn(T, &LocalConnection, &Message) -> bool {
         let tx = self.dbus_event_sender.clone();
-        move |e: DBusNameOwnerChanged, _: &LocalConnection, _: &Message| {
-            debug!("DBusNameOwnerChanged happened: {:?}", e);
+        move |e: T, _: &LocalConnection, _: &Message| {
             tx.send(TimedPlayerDbusEvent {
                 instant: Instant::now(),
-                event: DbusPlayerEvent::DBusNameOwnerChanged(e),
-            })
-            .unwrap();
-            true
-        }
-    }
-
-    fn create_dbus_properties_changed_handler(
-        &self,
-    ) -> impl Fn(PropertiesPropertiesChanged, &LocalConnection, &Message) -> bool {
-        let tx = self.dbus_event_sender.clone();
-        move |e: PropertiesPropertiesChanged, _: &LocalConnection, _: &Message| {
-            let instant = Instant::now();
-            tx.send(TimedPlayerDbusEvent {
-                instant,
-                event: DbusPlayerEvent::PropertiesChanged(e),
-            })
-            .unwrap();
-            true
-        }
-    }
-
-    fn create_mediaplayer2_seeked_handler(
-        &self,
-    ) -> impl Fn(MediaPlayer2SeekedHappened, &LocalConnection, &Message) -> bool {
-        let tx = self.dbus_event_sender.clone();
-        move |e: MediaPlayer2SeekedHappened, _: &LocalConnection, _: &Message| {
-            let instant = Instant::now();
-            tx.send(TimedPlayerDbusEvent {
-                instant,
-                event: DbusPlayerEvent::Seek(e),
+                event: constructor(e),
             })
             .unwrap();
             true
@@ -409,9 +379,10 @@ impl<'a> PlayerNotifications<'a> {
         &self,
         dbus_proxy_player: &Proxy<'a, &'a LocalConnection>,
     ) -> Result<(), dbus::Error> {
-        dbus_proxy_player.match_signal(self.create_dbus_properties_changed_handler())?;
+        dbus_proxy_player
+            .match_signal(self.create_dbus_handler(DbusPlayerEvent::PropertiesChanged))?;
 
-        dbus_proxy_player.match_signal(self.create_mediaplayer2_seeked_handler())?;
+        dbus_proxy_player.match_signal(self.create_dbus_handler(DbusPlayerEvent::Seek))?;
 
         // dbus_proxy_player.match_signal(|_: MediaPlayer2TrackListChangeHappened, _: &Connection, _: &Message| {
         //     debug!("TrackList happened");
@@ -465,14 +436,7 @@ impl<'a> PlayerNotifications<'a> {
         }
     }
 
-    fn run_sync(&self) -> Result<(), dbus::Error> {
-        let mut dbus_proxy_player: Option<Proxy<'a, &'a LocalConnection>> = None;
-
-        let dbus_name_owner_changed_token = self
-            .proxy_generic_dbus
-            .match_signal(self.create_dbus_name_owned_changed_handler())
-            .unwrap();
-
+    fn initial_try_connect_to_player(&self) {
         let player_owner_bus_finder = PlayerBusOwnerNameFinder {
             connection: self.connection,
             player_bus: &self.player_bus,
@@ -491,8 +455,20 @@ impl<'a> PlayerNotifications<'a> {
             };
             let mut m = dbus::arg::IterAppend::new(&mut msg);
             data.append(&mut m);
-            self.create_dbus_name_owned_changed_handler()(data, self.connection, &msg);
+            let handler = self.create_dbus_handler(DbusPlayerEvent::DBusNameOwnerChanged);
+            handler(data, self.connection, &msg);
         }
+    }
+
+    fn run_sync(&self) -> Result<(), dbus::Error> {
+        let mut dbus_proxy_player: Option<Proxy<'a, &'a LocalConnection>> = None;
+
+        let dbus_name_owner_changed_token = self
+            .proxy_generic_dbus
+            .match_signal(self.create_dbus_handler(DbusPlayerEvent::DBusNameOwnerChanged))
+            .unwrap();
+
+        self.initial_try_connect_to_player();
 
         'outer: loop {
             'inner: loop {
