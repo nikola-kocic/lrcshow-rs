@@ -131,10 +131,10 @@ impl LrcManager {
         }
     }
 
-    pub fn run_async(mut self) {
+    pub fn run_async(mut self) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             self.run_sync().unwrap();
-        });
+        })
     }
 }
 

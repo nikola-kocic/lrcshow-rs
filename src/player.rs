@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
-use std::convert::TryInto;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
@@ -64,10 +63,8 @@ fn parse_player_position(arg: &dyn RefArg) -> Result<Duration, String> {
     let v = arg
         .as_i64()
         .ok_or(format!("Position should be an i64 value, got {arg:?}"))?;
-    if v < 0 {
-        return Err(format!("Wrong position value: {v}"));
-    }
-    Ok(Duration::from_micros(v.try_into().unwrap()))
+    let micros = u64::try_from(v).map_err(|e| format!("Wrong position value: {v}, {e}"))?;
+    Ok(Duration::from_micros(micros))
 }
 
 fn parse_player_playback_status(playback_status: &dyn RefArg) -> Result<PlaybackStatus, String> {
@@ -163,46 +160,6 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     }
 }
 
-fn query_unique_owner_name(c: &dyn BlockingSender, bus_name: &str) -> Result<BusName, String> {
-    let get_name_owner = Message::new_method_call(
-        "org.freedesktop.DBus",
-        "/",
-        "org.freedesktop.DBus",
-        "GetNameOwner",
-    )?
-    .append1(bus_name);
-
-    let unique_owner_name: String = c
-        .send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
-        .map_err(|e| e.to_string())
-        .map(|reply| {
-            reply
-                .get1::<String>()
-                .expect("GetNameOwner must have name as first member")
-        })?;
-    BusName::new(unique_owner_name)
-}
-
-fn query_all_player_buses(c: &dyn BlockingSender) -> Result<Vec<String>, String> {
-    let list_names = Message::new_method_call(
-        "org.freedesktop.DBus",
-        "/",
-        "org.freedesktop.DBus",
-        "ListNames",
-    )?;
-
-    let reply = c
-        .send_with_reply_and_block(list_names, Duration::from_millis(500))
-        .map_err(|e| e.to_string())?;
-
-    let names: arg::Array<&str, _> = reply.read1().map_err(|e| e.to_string())?;
-
-    Ok(names
-        .filter(|name| name.starts_with(MPRIS2_PREFIX))
-        .map(std::borrow::ToOwned::to_owned)
-        .collect())
-}
-
 #[derive(Debug)]
 struct MediaPlayer2SeekedHappened {
     pub position_us: i64,
@@ -288,73 +245,98 @@ enum PlayerLifetimeEvent {
     PlayerShutDown,
 }
 
-fn get_dbus_name_owned_changed_handler(
-    sender: Sender<PlayerLifetimeEvent>,
-    player_bus: String,
-) -> impl Fn(DbusNameOwnedChanged, &LocalConnection, &Message) -> bool {
-    move |e: DbusNameOwnedChanged, _: &LocalConnection, _: &Message| {
-        // debug!("DbusNameOwnedChanged happened: {:?}", e);
-        if e.name == player_bus && e.old_owner.is_empty() {
-            sender.send(PlayerLifetimeEvent::PlayerShutDown).unwrap();
-        } else if e.name == player_bus && e.new_owner.is_empty() {
-            sender.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
+struct PlayerBusNameFinder<'a> {
+    connection: &'a dyn BlockingSender,
+}
+
+impl<'a> PlayerBusNameFinder<'a> {
+    fn query_all_player_buses(&self) -> Result<Vec<String>, String> {
+        let list_names = Message::new_method_call(
+            "org.freedesktop.DBus",
+            "/",
+            "org.freedesktop.DBus",
+            "ListNames",
+        )?;
+
+        let reply = self
+            .connection
+            .send_with_reply_and_block(list_names, Duration::from_millis(500))
+            .map_err(|e| e.to_string())?;
+
+        let names: arg::Array<&str, _> = reply.read1().map_err(|e| e.to_string())?;
+
+        Ok(names
+            .filter_map(|name| {
+                if name.starts_with(MPRIS2_PREFIX) {
+                    Some(name.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    fn query_unique_owner_name(&self, bus_name: &str) -> Result<BusName, String> {
+        let get_name_owner = Message::new_method_call(
+            "org.freedesktop.DBus",
+            "/",
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+        )?
+        .append1(bus_name);
+
+        let unique_owner_name: String = self
+            .connection
+            .send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
+            .map_err(|e| e.to_string())
+            .map(|reply| {
+                reply
+                    .get1::<String>()
+                    .expect("GetNameOwner must have name as first member")
+            })?;
+        BusName::new(unique_owner_name)
+    }
+
+    fn query_player_owner_name(&self, player: &str) -> Result<Option<BusName>, String> {
+        let all_player_buses = self.query_all_player_buses()?;
+
+        let player_bus = format!("{MPRIS2_PREFIX}{player}");
+        if !all_player_buses.contains(&player_bus) {
+            info!(
+                "Specified player not running. Found the following players: {}",
+                all_player_buses
+                    .iter()
+                    .map(|s| s.trim_start_matches(MPRIS2_PREFIX))
+                    .collect::<Vec<&str>>()
+                    .join(", ")
+            );
+            return Ok(None);
         }
-        true
+
+        let player_owner_name = self.query_unique_owner_name(&player_bus)?;
+        debug!("player_owner_name = {:?}", player_owner_name);
+        Ok(Some(player_owner_name))
     }
 }
 
-fn query_player_owner_name(
-    c: &dyn BlockingSender,
-    player: &str,
-) -> Result<Option<BusName>, String> {
-    let all_player_buses = query_all_player_buses(c)?;
-
-    let player_bus = format!("{MPRIS2_PREFIX}{player}");
-    if !all_player_buses.contains(&player_bus) {
-        info!(
-            "Specified player not running. Found the following players: {}",
-            all_player_buses
-                .iter()
-                .map(|s| s.trim_start_matches(MPRIS2_PREFIX))
-                .collect::<Vec<&str>>()
-                .join(", ")
-        );
-        return Ok(None);
-    }
-
-    let player_owner_name = query_unique_owner_name(c, &player_bus)?;
-    debug!("player_owner_name = {:?}", player_owner_name);
-    Ok(Some(player_owner_name))
-}
-
-fn subscribe_to_player_start_stop(
-    c: &LocalConnection,
-    player: &str,
-    sender: &Sender<PlayerLifetimeEvent>,
-) -> Result<(), String> {
-    let player_bus = format!("{MPRIS2_PREFIX}{player}");
-
-    let proxy_generic_dbus = c.with_proxy(
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        Duration::from_millis(5000),
-    );
-    proxy_generic_dbus
-        .match_signal(get_dbus_name_owned_changed_handler(
-            sender.clone(),
-            player_bus,
-        ))
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub struct PlayerNotifications {
+pub struct PlayerNotifications<'a> {
+    connection: &'a LocalConnection,
     sender: Sender<TimedEvent>,
+    proxy_generic_dbus: Proxy<'a, &'a LocalConnection>,
 }
 
-impl PlayerNotifications {
-    pub fn new(sender: Sender<TimedEvent>) -> Self {
-        Self { sender }
+impl<'a> PlayerNotifications<'a> {
+    fn new(connection: &'a LocalConnection, sender: Sender<TimedEvent>) -> Self {
+        let proxy_generic_dbus = connection.with_proxy(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            Duration::from_millis(5000),
+        );
+        PlayerNotifications {
+            connection,
+            sender,
+            proxy_generic_dbus,
+        }
     }
 
     fn create_dbus_properties_changed_handler(
@@ -395,75 +377,106 @@ impl PlayerNotifications {
         }
     }
 
-    fn subscribe(&self, c: &LocalConnection, player_owner_name: BusName) -> Result<(), String> {
-        let p = get_connection_proxy(c, player_owner_name);
+    fn subscribe(&self, player_owner_name: BusName) -> Result<(), dbus::Error> {
+        let p = get_connection_proxy(self.connection, player_owner_name);
 
-        p.match_signal(self.create_dbus_properties_changed_handler())
-            .map_err(|e| e.to_string())?;
+        p.match_signal(self.create_dbus_properties_changed_handler())?;
 
-        p.match_signal(self.create_mediaplayer2_seeked_handler())
-            .map_err(|e| e.to_string())?;
+        p.match_signal(self.create_mediaplayer2_seeked_handler())?;
 
         // p.match_signal(|_: MediaPlayer2TrackListChangeHappened, _: &Connection| {
         //     debug!("TrackList happened");
         //     true
-        // }).map_err(|e| e.to_string())?;
+        // })?;
 
         Ok(())
     }
 
-    fn react_on_lifetime_event<F: FnMut(PlayerEvent)>(
+    fn react_on_lifetime_event(
         &self,
         lifetime_event: PlayerLifetimeEvent,
-        c: &LocalConnection,
         player: &str,
-        mut f: F,
-    ) {
+    ) -> Result<Option<PlayerEvent>, String> {
         match lifetime_event {
             PlayerLifetimeEvent::PlayerStarted => {
-                if let Some(player_owner_name) = query_player_owner_name(c, player).unwrap() {
-                    self.subscribe(c, player_owner_name.clone()).unwrap();
-                    f(PlayerEvent::PlayerStarted { player_owner_name });
+                if let Some(player_owner_name) = (PlayerBusNameFinder {
+                    connection: self.connection,
+                })
+                .query_player_owner_name(player)?
+                {
+                    self.subscribe(player_owner_name.clone())
+                        .map_err(|e| e.to_string())?;
+                    Ok(Some(PlayerEvent::PlayerStarted { player_owner_name }))
+                } else {
+                    Ok(None)
                 }
             }
-            PlayerLifetimeEvent::PlayerShutDown => {
-                f(PlayerEvent::PlayerShutDown);
-            }
+            PlayerLifetimeEvent::PlayerShutDown => Ok(Some(PlayerEvent::PlayerShutDown)),
         }
     }
 
-    fn run_sync(&self, player: &str) {
+    fn subscribe_to_player_start_stop(
+        &self,
+        player: &str,
+        sender: Sender<PlayerLifetimeEvent>,
+    ) -> Result<dbus::channel::Token, dbus::Error> {
+        let player_bus = format!("{MPRIS2_PREFIX}{player}");
+
+        let token = self.proxy_generic_dbus.match_signal(
+            move |e: DbusNameOwnedChanged, _: &LocalConnection, _: &Message| {
+                debug!("DbusNameOwnedChanged happened: {:?}", e);
+                if e.name == player_bus {
+                    if e.old_owner.is_empty() {
+                        sender.send(PlayerLifetimeEvent::PlayerShutDown).unwrap();
+                    } else if e.new_owner.is_empty() {
+                        sender.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
+                    }
+                }
+                true
+            },
+        )?;
+        Ok(token)
+    }
+
+    fn run_sync(&self, player: &str) -> Result<(), dbus::Error> {
         let (tx, rx) = channel::<PlayerLifetimeEvent>();
-        let c = LocalConnection::new_session().unwrap();
-        subscribe_to_player_start_stop(&c, player, &tx).unwrap();
+        let dbus_name_owner_changed_token =
+            self.subscribe_to_player_start_stop(player, tx.clone())?;
         tx.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
-        loop {
-            loop {
+        'outer: loop {
+            'inner: loop {
                 match rx.try_recv() {
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break 'inner,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break 'outer,
                     Ok(lifetime_event) => {
                         let instant = Instant::now();
-                        self.react_on_lifetime_event(lifetime_event, &c, player, |player_event| {
+                        if let Some(player_event) = self
+                            .react_on_lifetime_event(lifetime_event, player)
+                            .unwrap()
+                        {
                             self.sender
                                 .send(TimedEvent {
                                     instant,
                                     event: Event::PlayerEvent(player_event),
                                 })
                                 .unwrap();
-                        });
+                        }
                     }
                 }
             }
-            c.process(Duration::from_millis(16)).unwrap();
+            self.connection.process(Duration::from_millis(16))?;
         }
+        self.proxy_generic_dbus
+            .match_stop(dbus_name_owner_changed_token, true)?;
+        Ok(())
     }
 
-    pub fn run_async(self, player: &str) {
-        let player_string = player.to_owned();
+    pub fn run_async(player: String, sender: Sender<TimedEvent>) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            self.run_sync(&player_string);
-        });
+            let connection = LocalConnection::new_session().unwrap();
+            let o = PlayerNotifications::new(&connection, sender);
+            o.run_sync(&player).unwrap();
+        })
     }
 }
 
