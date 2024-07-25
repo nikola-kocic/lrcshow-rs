@@ -25,11 +25,39 @@ const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
 const MPRIS2_METADATA_FILE_URI: &str = "xesam:url";
 
-pub type ConnectionProxy<'a> = Proxy<'a, &'a LocalConnection>;
+pub type BusName = dbus::strings::BusName<'static>;
 
-fn query_player_property(p: &ConnectionProxy, name: &str) -> Result<Box<dyn RefArg>, String> {
-    p.get("org.mpris.MediaPlayer2.Player", name)
-        .map_err(|e| e.to_string())
+pub fn get_connection_proxy(
+    c: &LocalConnection,
+    player_owner_name: BusName,
+) -> Proxy<&LocalConnection> {
+    debug!("get_connection_proxy with {player_owner_name}");
+    c.with_proxy(player_owner_name, MPRIS2_PATH, Duration::from_millis(5000))
+}
+
+pub struct QueryPlayerProperties<'a, C: BlockingSender> {
+    pub proxy: Proxy<'a, &'a C>,
+}
+
+impl<'a, C: BlockingSender> QueryPlayerProperties<'a, C> {
+    fn query_player_property(&self, name: &str) -> Result<Box<dyn RefArg>, String> {
+        self.proxy
+            .get("org.mpris.MediaPlayer2.Player", name)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn query_player_position(&self) -> Result<Duration, String> {
+        let v = self.query_player_property("Position")?;
+        parse_player_position(&v)
+    }
+
+    pub fn query_player_state(&self) -> Result<PlayerState, String> {
+        let properties = self
+            .proxy
+            .get_all("org.mpris.MediaPlayer2.Player")
+            .map_err(|e| e.to_string())?;
+        parse_player_state(&properties, Instant::now())
+    }
 }
 
 fn parse_player_position(arg: &dyn RefArg) -> Result<Duration, String> {
@@ -40,11 +68,6 @@ fn parse_player_position(arg: &dyn RefArg) -> Result<Duration, String> {
         return Err(format!("Wrong position value: {v}"));
     }
     Ok(Duration::from_micros(v.try_into().unwrap()))
-}
-
-pub fn query_player_position(p: &ConnectionProxy) -> Result<Duration, String> {
-    let v = query_player_property(p, "Position")?;
-    parse_player_position(&v)
 }
 
 fn parse_player_playback_status(playback_status: &dyn RefArg) -> Result<PlaybackStatus, String> {
@@ -131,13 +154,6 @@ fn parse_player_state(
     })
 }
 
-pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
-    let properties = p
-        .get_all("org.mpris.MediaPlayer2.Player")
-        .map_err(|e| e.to_string())?;
-    parse_player_state(&properties, Instant::now())
-}
-
 fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     match playback_status {
         "Playing" => PlaybackStatus::Playing,
@@ -147,7 +163,7 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
     }
 }
 
-fn query_unique_owner_name(c: &dyn BlockingSender, bus_name: &str) -> Result<String, String> {
+fn query_unique_owner_name(c: &dyn BlockingSender, bus_name: &str) -> Result<BusName, String> {
     let get_name_owner = Message::new_method_call(
         "org.freedesktop.DBus",
         "/",
@@ -156,13 +172,15 @@ fn query_unique_owner_name(c: &dyn BlockingSender, bus_name: &str) -> Result<Str
     )?
     .append1(bus_name);
 
-    c.send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
+    let unique_owner_name: String = c
+        .send_with_reply_and_block(get_name_owner, Duration::from_millis(100))
         .map_err(|e| e.to_string())
         .map(|reply| {
             reply
-                .get1()
+                .get1::<String>()
                 .expect("GetNameOwner must have name as first member")
-        })
+        })?;
+    BusName::new(unique_owner_name)
 }
 
 fn query_all_player_buses(c: &dyn BlockingSender) -> Result<Vec<String>, String> {
@@ -186,7 +204,7 @@ fn query_all_player_buses(c: &dyn BlockingSender) -> Result<Vec<String>, String>
 }
 
 #[derive(Debug)]
-pub struct MediaPlayer2SeekedHappened {
+struct MediaPlayer2SeekedHappened {
     pub position_us: i64,
 }
 
@@ -204,7 +222,7 @@ impl arg::ReadAll for MediaPlayer2SeekedHappened {
 }
 
 #[derive(Debug)]
-pub struct DbusNameOwnedChanged {
+struct DbusNameOwnedChanged {
     pub name: String,
     pub new_owner: String,
     pub old_owner: String,
@@ -225,25 +243,10 @@ impl arg::ReadAll for DbusNameOwnedChanged {
     }
 }
 
-pub fn get_connection_proxy<'a>(
-    c: &'a LocalConnection,
-    player_owner_name: &'a str,
-) -> ConnectionProxy<'a> {
-    debug!("get_connection_proxy with {}", player_owner_name);
-    c.with_proxy(player_owner_name, MPRIS2_PATH, Duration::from_millis(5000))
-}
-
 fn react_on_changed_seek_value<F: FnMut(PlayerEvent)>(e: &MediaPlayer2SeekedHappened, mut f: F) {
     debug!("Seek happened: {:?}", e);
-    if e.position_us < 0 {
-        panic!(
-            "Position value must be positive number, found {}",
-            e.position_us
-        );
-    }
-    f(PlayerEvent::Seeked {
-        position: Duration::from_micros(e.position_us as u64),
-    });
+    let position = Duration::from_micros(u64::try_from(e.position_us).unwrap());
+    f(PlayerEvent::Seeked { position });
 }
 
 fn react_on_changed_properties<F: FnMut(PlayerEvent)>(
@@ -300,7 +303,10 @@ fn get_dbus_name_owned_changed_handler(
     }
 }
 
-fn query_player_owner_name(c: &dyn BlockingSender, player: &str) -> Result<Option<String>, String> {
+fn query_player_owner_name(
+    c: &dyn BlockingSender,
+    player: &str,
+) -> Result<Option<BusName>, String> {
     let all_player_buses = query_all_player_buses(c)?;
 
     let player_bus = format!("{MPRIS2_PREFIX}{player}");
@@ -356,8 +362,8 @@ impl PlayerNotifications {
     ) -> impl Fn(PropertiesPropertiesChanged, &LocalConnection, &Message) -> bool {
         let sender_clone = self.sender.clone();
         move |e: PropertiesPropertiesChanged, _: &LocalConnection, _: &Message| {
-            let instant = Instant::now();
             if e.interface_name == "org.mpris.MediaPlayer2.Player" {
+                let instant = Instant::now();
                 react_on_changed_properties(e.changed_properties, |player_event| {
                     sender_clone
                         .send(TimedEvent {
@@ -389,7 +395,7 @@ impl PlayerNotifications {
         }
     }
 
-    fn subscribe(&self, c: &LocalConnection, player_owner_name: &str) -> Result<(), String> {
+    fn subscribe(&self, c: &LocalConnection, player_owner_name: BusName) -> Result<(), String> {
         let p = get_connection_proxy(c, player_owner_name);
 
         p.match_signal(self.create_dbus_properties_changed_handler())
@@ -416,7 +422,7 @@ impl PlayerNotifications {
         match lifetime_event {
             PlayerLifetimeEvent::PlayerStarted => {
                 if let Some(player_owner_name) = query_player_owner_name(c, player).unwrap() {
-                    self.subscribe(c, &player_owner_name).unwrap();
+                    self.subscribe(c, player_owner_name.clone()).unwrap();
                     f(PlayerEvent::PlayerStarted { player_owner_name });
                 }
             }

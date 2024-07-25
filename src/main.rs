@@ -21,7 +21,7 @@ use crate::events::{
 use crate::formatters::format_duration;
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
-use crate::player::{get_connection_proxy, PlayerNotifications};
+use crate::player::{get_connection_proxy, PlayerNotifications, QueryPlayerProperties};
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -103,7 +103,7 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
     lrc_manager.run_async();
 
     let c = LocalConnection::new_session().unwrap();
-    let mut player_owner_name: Option<String> = None;
+    let mut player_query: Option<QueryPlayerProperties<'_, LocalConnection>> = None;
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;
     let mut lyrics: Option<Lyrics> = None;
@@ -153,19 +153,12 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
                         PlaybackStatus::Paused,
                     )) => {
-                        if let Some(p) = player_state {
-                            player_state = Some(PlayerState {
-                                playback_status: PlaybackStatus::Paused,
-                                position_snapshot: PositionSnapshot {
-                                    position: player::query_player_position(&get_connection_proxy(
-                                        &c,
-                                        player_owner_name.as_ref().unwrap(),
-                                    ))
-                                    .unwrap(),
-                                    instant: Instant::now(),
-                                },
-                                metadata: p.metadata,
-                            });
+                        if let (Some(p), Some(q)) = (&mut player_state, &player_query) {
+                            p.playback_status = PlaybackStatus::Paused;
+                            p.position_snapshot = PositionSnapshot {
+                                position: q.query_player_position().unwrap(),
+                                instant: Instant::now(),
+                            };
                         }
                     }
                     Event::PlayerEvent(PlayerEvent::MetadataChange(metadata)) => {
@@ -182,16 +175,18 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
                         LrcManager::change_watched_path(None, &lrc_manager_sender);
                         player_state = None;
-                        player_owner_name = None;
+                        player_query = None;
                     }
                     Event::PlayerEvent(PlayerEvent::PlayerStarted {
                         player_owner_name: n,
                     }) => {
-                        player_state = Some(
-                            player::query_player_state(&get_connection_proxy(&c, &n)).unwrap(),
-                        ); // TODO: This is often crashing on player restart
+                        let q = QueryPlayerProperties {
+                            proxy: get_connection_proxy(&c, n),
+                        };
+                        // TODO: This is often crashing on player restart
+                        player_state = Some(q.query_player_state().unwrap());
+                        player_query = Some(q);
 
-                        player_owner_name = Some(n);
                         if lrc_filepath.is_none() {
                             LrcManager::change_watched_path(
                                 player_state

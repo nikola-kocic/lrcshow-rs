@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::lrc::Lyrics;
+use crate::player::BusName;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum PlaybackStatus {
@@ -46,7 +47,7 @@ impl PlayerState {
 
 #[derive(Debug, PartialEq)]
 pub enum PlayerEvent {
-    PlayerStarted { player_owner_name: String },
+    PlayerStarted { player_owner_name: BusName },
     PlayerShutDown,
     PlaybackStatusChange(PlaybackStatus),
     Seeked { position: Duration },
