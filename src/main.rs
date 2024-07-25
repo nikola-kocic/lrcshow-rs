@@ -87,20 +87,19 @@ impl<'a> LrcTimedTextState<'a> {
     }
 }
 
-fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
-    let server = server::run_async();
+fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
+    let (server, server_join_handle) = server::run_async();
 
     let (sender, receiver) = channel::<TimedEvent>();
 
-    let player_notifs = PlayerNotifications::new(sender.clone());
-    player_notifs.run_async(player);
+    let player_notifs_join_handle = PlayerNotifications::run_async(player, sender.clone());
 
     let lrc_manager = LrcManager::new(sender);
     let lrc_manager_sender = lrc_manager.clone_sender();
     if lrc_filepath.is_some() {
         LrcManager::change_watched_path(lrc_filepath.clone(), &lrc_manager_sender);
     }
-    lrc_manager.run_async();
+    let lrc_manager_join_handle = lrc_manager.run_async();
 
     let c = LocalConnection::new_session().unwrap();
     let mut player_query: Option<QueryPlayerProperties<'_, LocalConnection>> = None;
@@ -109,10 +108,13 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
     let mut lyrics: Option<Lyrics> = None;
 
     loop {
+        assert!(!player_notifs_join_handle.is_finished());
+        assert!(!lrc_manager_join_handle.is_finished());
+        assert!(!server_join_handle.is_finished());
         let mut received_events = false;
         match receiver.recv_timeout(REFRESH_EVERY) {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Ok(timed_event) => {
                 debug!("{:?}", timed_event);
                 received_events = true;
@@ -234,6 +236,11 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
             }
         }
     }
+
+    player_notifs_join_handle.join().unwrap();
+    lrc_manager_join_handle.join().unwrap();
+    server_join_handle.join().unwrap();
+    Some(())
 }
 
 fn main() {
@@ -249,5 +256,5 @@ fn main() {
         error!("Lyrics path must be a file");
         return;
     }
-    run(&opt.player, &lyrics_filepath);
+    run(opt.player, &lyrics_filepath);
 }

@@ -113,14 +113,14 @@ fn run_dbus_server(s: Server) -> Result<Server, dbus::Error> {
     unreachable!()
 }
 
-pub fn run_async() -> Server {
+pub fn run_async() -> (Server, std::thread::JoinHandle<()>) {
     let server = Server {
         active_lyrics_lines: Arc::new(Mutex::new(None)),
         current_timing: Arc::new(Mutex::new(None)),
     };
     let ret = server.clone();
-    thread::spawn(move || {
+    let join_handle = thread::spawn(move || {
         run_dbus_server(server).unwrap();
     });
-    ret
+    (ret, join_handle)
 }
