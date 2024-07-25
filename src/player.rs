@@ -25,9 +25,9 @@ const MPRIS2_PATH: &str = "/org/mpris/MediaPlayer2";
 
 const MPRIS2_METADATA_FILE_URI: &str = "xesam:url";
 
-pub type BusName = dbus::strings::BusName<'static>;
+type BusName = dbus::strings::BusName<'static>;
 
-pub fn get_connection_proxy(
+fn get_connection_proxy(
     c: &LocalConnection,
     player_owner_name: BusName,
 ) -> Proxy<&LocalConnection> {
@@ -35,8 +35,8 @@ pub fn get_connection_proxy(
     c.with_proxy(player_owner_name, MPRIS2_PATH, Duration::from_millis(5000))
 }
 
-pub struct QueryPlayerProperties<'a, C: BlockingSender> {
-    pub proxy: Proxy<'a, &'a C>,
+struct QueryPlayerProperties<'a, C: BlockingSender> {
+    proxy: &'a Proxy<'a, &'a C>,
 }
 
 impl<'a, C: BlockingSender> QueryPlayerProperties<'a, C> {
@@ -46,12 +46,12 @@ impl<'a, C: BlockingSender> QueryPlayerProperties<'a, C> {
             .map_err(|e| e.to_string())
     }
 
-    pub fn query_player_position(&self) -> Result<Duration, String> {
+    fn query_player_position(&self) -> Result<Duration, String> {
         let v = self.query_player_property("Position")?;
         parse_player_position(&v)
     }
 
-    pub fn query_player_state(&self) -> Result<PlayerState, String> {
+    fn query_player_state(&self) -> Result<PlayerState, String> {
         let properties = self
             .proxy
             .get_all("org.mpris.MediaPlayer2.Player")
@@ -163,7 +163,7 @@ fn parse_playback_status(playback_status: &str) -> PlaybackStatus {
 
 #[derive(Debug)]
 struct MediaPlayer2SeekedHappened {
-    pub position_us: i64,
+    position_us: i64,
 }
 
 impl dbus::message::SignalArgs for MediaPlayer2SeekedHappened {
@@ -181,9 +181,9 @@ impl arg::ReadAll for MediaPlayer2SeekedHappened {
 
 #[derive(Debug)]
 struct DBusNameOwnerChanged {
-    pub name: String,
-    pub new_owner: String,
-    pub old_owner: String,
+    name: String,
+    new_owner: String,
+    old_owner: String,
 }
 
 impl arg::AppendAll for DBusNameOwnerChanged {
@@ -215,27 +215,28 @@ fn react_on_changed_seek_value<F: FnMut(PlayerEvent)>(e: &MediaPlayer2SeekedHapp
     f(PlayerEvent::Seeked { position });
 }
 
-fn react_on_changed_properties<F: FnMut(PlayerEvent)>(
+fn react_on_changed_properties<'a, C: BlockingSender>(
     changed_properties: dbus::arg::PropMap,
-    mut f: F,
+    proxy: &Proxy<'a, &'a C>,
+    mut f: impl FnMut(PlayerEvent),
 ) {
     debug!("react_on_changed_properties: {changed_properties:?}");
+    let mut playback_status: Option<PlaybackStatus> = None;
+    let mut position: Option<Duration> = None;
+    let mut metadata: Option<Option<Metadata>> = None;
+
     for (k, v) in changed_properties {
         match k.as_ref() {
             "PlaybackStatus" => {
                 let playback_status_str = v.as_str().unwrap();
                 debug!("playback_status = {:?}", playback_status_str);
-                let playback_status = parse_playback_status(playback_status_str);
-                f(PlayerEvent::PlaybackStatusChange(playback_status));
+                playback_status = Some(parse_playback_status(playback_status_str));
             }
             "Metadata" => {
-                let metadata = parse_player_metadata(&v).unwrap();
-                f(PlayerEvent::MetadataChange(metadata));
+                metadata = Some(parse_player_metadata(&v).unwrap());
             }
             "Position" => {
-                let position_us = v.as_i64().unwrap();
-                let position = Duration::from_micros(u64::try_from(position_us).unwrap());
-                f(PlayerEvent::Seeked { position });
+                position = Some(parse_player_position(&v).unwrap());
             }
             "Volume" => {}
             _ => {
@@ -245,6 +246,21 @@ fn react_on_changed_properties<F: FnMut(PlayerEvent)>(
                 });
             }
         }
+    }
+
+    if let Some(metadata) = metadata {
+        f(PlayerEvent::MetadataChange(metadata));
+    }
+
+    if let Some(position) = position {
+        f(PlayerEvent::Seeked { position });
+    } else if playback_status == Some(PlaybackStatus::Paused) {
+        let q = QueryPlayerProperties { proxy };
+        position = Some(q.query_player_position().unwrap());
+    }
+
+    if let Some(status) = playback_status {
+        f(PlayerEvent::PlaybackStatusChange { status, position });
     }
 }
 
@@ -401,7 +417,7 @@ impl<'a> PlayerNotifications<'a> {
         if e.name == self.player_bus {
             if e.old_owner.is_empty() {
                 *dbus_proxy_player = None;
-                f(PlayerEvent::PlayerShutDown)
+                f(PlayerEvent::PlayerShutDown);
             } else if e.new_owner.is_empty() {
                 let player_owner_name = BusName::new(e.name).unwrap();
                 *dbus_proxy_player = Some(get_connection_proxy(
@@ -411,7 +427,14 @@ impl<'a> PlayerNotifications<'a> {
                 self.subscribe(dbus_proxy_player.as_ref().unwrap())
                     .map_err(|e| e.to_string())
                     .unwrap();
-                f(PlayerEvent::PlayerStarted { player_owner_name })
+
+                let q = QueryPlayerProperties {
+                    proxy: dbus_proxy_player.as_ref().unwrap(),
+                };
+                let player_state = q.query_player_state().unwrap();
+                f(PlayerEvent::PlayerStarted {
+                    state: player_state,
+                });
             }
         }
     }
@@ -426,12 +449,18 @@ impl<'a> PlayerNotifications<'a> {
         match dbus_event {
             DbusPlayerEvent::PropertiesChanged(e) => {
                 if e.interface_name == "org.mpris.MediaPlayer2.Player" {
-                    react_on_changed_properties(e.changed_properties, f)
+                    react_on_changed_properties(
+                        e.changed_properties,
+                        dbus_proxy_player.as_ref().unwrap(),
+                        f,
+                    );
                 }
             }
-            DbusPlayerEvent::Seek(e) => react_on_changed_seek_value(&e, f),
+            DbusPlayerEvent::Seek(e) => {
+                react_on_changed_seek_value(&e, f);
+            }
             DbusPlayerEvent::DBusNameOwnerChanged(e) => {
-                self.react_on_dbus_name_owned_changed(e, dbus_proxy_player, f)
+                self.react_on_dbus_name_owned_changed(e, dbus_proxy_player, f);
             }
         }
     }
@@ -450,7 +479,7 @@ impl<'a> PlayerNotifications<'a> {
             .unwrap();
             let data = DBusNameOwnerChanged {
                 name: o.to_string(),
-                new_owner: "".to_string(),
+                new_owner: String::new(),
                 old_owner: o.to_string(),
             };
             let mut m = dbus::arg::IterAppend::new(&mut msg);
@@ -510,7 +539,7 @@ impl<'a> PlayerNotifications<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{str::FromStr, sync::atomic::AtomicU32};
 
     use super::*;
     use dbus::arg::Variant;
@@ -553,6 +582,92 @@ mod tests {
         metadata
     }
 
+    fn create_test_properties_1() -> dbus::arg::PropMap {
+        // {
+        //     "CanPlay": Variant(true),
+        //     "CanPause": Variant(true),
+        //     "CanSeek": Variant(true),
+        //     "PlaybackStatus": Variant("Paused"),
+        //     "CanGoNext": Variant(true),
+        //     "CanControl": Variant(true),
+        //     "Position": Variant(41337000),
+        //     "Volume": Variant(0.5),
+        //     "CanGoPrevious": Variant(true),
+        //     "Metadata": Variant({
+        //         "mpris:length": Variant(238655000),
+        //         "xesam:album": Variant("Greatest Hits II"),
+        //         "xesam:url": Variant("file:///home/user/music/Queen/--%20Compilations%20--/%281991%29%20Greatest%20Hits%20II/13%20Queen%20-%20The%20Invisible%20Man.mp3"),
+        //         "mpris:trackid": Variant(Path("/org/mpris/MediaPlayer2/CurrentTrack\0")),
+        //         "mpris:artUrl": Variant("file:///tmp/audacious-temp-75WRR2"),
+        //         "xesam:artist": Variant(["Queen"]),
+        //         "xesam:title": Variant("The Invisible Man")
+        //     })
+        // }
+
+        let mut properties = dbus::arg::PropMap::new();
+        properties.insert("CanPlay".to_owned(), Variant(Box::new(true)));
+        properties.insert("CanPause".to_owned(), Variant(Box::new(true)));
+        properties.insert("CanSeek".to_owned(), Variant(Box::new(true)));
+        properties.insert(
+            "PlaybackStatus".to_owned(),
+            Variant(Box::new("Paused".to_owned())),
+        );
+        properties.insert("CanGoNext".to_owned(), Variant(Box::new(true)));
+        properties.insert("CanControl".to_owned(), Variant(Box::new(true)));
+        properties.insert("Position".to_owned(), Variant(Box::new(41337000)));
+        properties.insert("Volume".to_owned(), Variant(Box::new(0.5)));
+        properties.insert("CanGoPrevious".to_owned(), Variant(Box::new(true)));
+        properties.insert(
+            "Metadata".to_owned(),
+            Variant(Box::new(create_test_metadata_1())),
+        );
+        properties
+    }
+
+    struct FakeBlockingSender {
+        props: dbus::arg::PropMap,
+        msg_serial_count: AtomicU32,
+    }
+
+    impl FakeBlockingSender {
+        fn new(props: dbus::arg::PropMap) -> Self {
+            Self {
+                props,
+                msg_serial_count: AtomicU32::new(1),
+            }
+        }
+
+        fn get_and_advance_serial(&self) -> u32 {
+            self.msg_serial_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl BlockingSender for FakeBlockingSender {
+        fn send_with_reply_and_block(
+            &self,
+            msg: Message,
+            _timeout: Duration,
+        ) -> Result<Message, dbus::Error> {
+            let err = dbus::Error::new_failed(
+                format!("Unsupported on FakeBlockingSender: {msg:?}").as_str(),
+            );
+            // msg.interface();
+            // msg.destination();
+            let m = &*msg.member().unwrap();
+            assert!(m == "Get");
+            let (_, k) = msg.get2::<String, String>();
+            let prop_name = k.as_ref().unwrap();
+            if let Some(v) = self.props.get(prop_name) {
+                let mut msg_mut = msg;
+                msg_mut.set_serial(self.get_and_advance_serial());
+                Ok(msg_mut.return_with_args((v,)))
+            } else {
+                Err(err)
+            }
+        }
+    }
+
     #[test]
     fn test_react_on_changed_properties_regular() {
         // Message {
@@ -581,12 +696,23 @@ mod tests {
 
         let mut changed_properties = dbus::arg::PropMap::new();
         changed_properties.insert(
+            "PlaybackStatus".to_owned(),
+            Variant(Box::new("Paused".to_owned())),
+        );
+        changed_properties.insert(
             "Metadata".to_owned(),
             Variant(Box::new(create_test_metadata_1())),
         );
 
-        let mut reported_events: Vec<PlayerEvent> = Vec::<PlayerEvent>::new();
-        react_on_changed_properties(changed_properties, |player_event| {
+        let fake_connection = FakeBlockingSender::new(create_test_properties_1());
+        let fake_proxy = Proxy {
+            connection: &fake_connection,
+            destination: ":0.000".into(),
+            path: "/org/mpris/MediaPlayer2".into(),
+            timeout: Duration::from_secs(10),
+        };
+        let mut reported_events = Vec::<PlayerEvent>::new();
+        react_on_changed_properties(changed_properties, &fake_proxy, |player_event| {
             reported_events.push(player_event)
         });
 
@@ -595,53 +721,15 @@ mod tests {
                 file_path: PathBuf::from_str(
                     "/home/user/music/Queen/-- Compilations --/(1991) Greatest Hits II/13 Queen - The Invisible Man.mp3"
                 ).unwrap()
-            }))
+            })),
+            PlayerEvent::PlaybackStatusChange { status: PlaybackStatus::Paused, position: Some(Duration::from_micros(41337000)) },
         ]);
     }
 
     #[test]
     fn test_parse_state() {
-        // {
-        //     "CanPlay": Variant(true),
-        //     "CanPause": Variant(true),
-        //     "CanSeek": Variant(true),
-        //     "PlaybackStatus": Variant("Paused"),
-        //     "CanGoNext": Variant(true),
-        //     "CanControl": Variant(true),
-        //     "Position": Variant(41337000),
-        //     "Volume": Variant(0.5),
-        //     "CanGoPrevious": Variant(true),
-        //     "Metadata": Variant({
-        //         "mpris:length": Variant(238655000),
-        //         "xesam:album": Variant("Greatest Hits II"),
-        //         "xesam:url": Variant("file:///home/nikola/Music/from-phone/Music/mnt/backup2/music/english/Queen/--%20Compilations%20--/%281991%29%20Greatest%20Hits%20II/13%20Queen%20-%20The%20Invisible%20Man.mp3"),
-        //         "mpris:trackid": Variant(Path("/org/mpris/MediaPlayer2/CurrentTrack\0")),
-        //         "mpris:artUrl": Variant("file:///tmp/audacious-temp-75WRR2"),
-        //         "xesam:artist": Variant(["Queen"]),
-        //         "xesam:title": Variant("The Invisible Man")
-        //     })
-        // }
-
-        let mut properties = dbus::arg::PropMap::new();
-        properties.insert("CanPlay".to_owned(), Variant(Box::new(true)));
-        properties.insert("CanPause".to_owned(), Variant(Box::new(true)));
-        properties.insert("CanSeek".to_owned(), Variant(Box::new(true)));
-        properties.insert(
-            "PlaybackStatus".to_owned(),
-            Variant(Box::new("Paused".to_owned())),
-        );
-        properties.insert("CanGoNext".to_owned(), Variant(Box::new(true)));
-        properties.insert("CanControl".to_owned(), Variant(Box::new(true)));
-        properties.insert("Position".to_owned(), Variant(Box::new(41337000)));
-        properties.insert("Volume".to_owned(), Variant(Box::new(0.5)));
-        properties.insert("CanGoPrevious".to_owned(), Variant(Box::new(true)));
-        properties.insert(
-            "Metadata".to_owned(),
-            Variant(Box::new(create_test_metadata_1())),
-        );
-
         let instant = Instant::now();
-        let state = parse_player_state(&properties, instant);
+        let state = parse_player_state(&create_test_properties_1(), instant);
         assert_eq!(state, Ok(PlayerState {
             playback_status: PlaybackStatus::Paused,
             position_snapshot: PositionSnapshot{
