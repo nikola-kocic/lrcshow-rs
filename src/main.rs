@@ -201,6 +201,12 @@ fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                             );
                         }
                     }
+                    Event::PlayerEvent(PlayerEvent::Unknown {
+                        key: unknown_key,
+                        value: unknown_value,
+                    }) => {
+                        warn!("Unknown player event property: {unknown_key} = {unknown_value}");
+                    }
                     Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
                         lrc_state = None; // will be asigned after event processing
                         lyrics = l;
