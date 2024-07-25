@@ -15,7 +15,7 @@ pub struct Metadata {
     pub file_path: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct PositionSnapshot {
     /// Position at the time of construction
     pub position: Duration,
@@ -24,7 +24,7 @@ pub struct PositionSnapshot {
     pub instant: Instant,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct PlayerState {
     pub playback_status: PlaybackStatus,
 
