@@ -87,7 +87,7 @@ impl<'a> LrcTimedTextState<'a> {
     }
 }
 
-fn run(player: &str, lrc_filepath: Option<PathBuf>) -> Option<()> {
+fn run(player: &str, lrc_filepath: &Option<PathBuf>) -> Option<()> {
     let server = server::run_async();
 
     let (sender, receiver) = channel::<TimedEvent>();
@@ -248,5 +248,5 @@ fn main() {
         error!("Lyrics path must be a file");
         return;
     }
-    run(&opt.player, lyrics_filepath);
+    run(&opt.player, &lyrics_filepath);
 }

@@ -64,7 +64,7 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let minutes_str = &time_str[0..2];
     let minutes = minutes_str
         .parse::<u64>()
-        .map_err(|e| format!("Bad minutes format ({}): {}", minutes_str, e))?;
+        .map_err(|e| format!("Bad minutes format ({minutes_str}): {e}"))?;
 
     if &time_str[2..3] != ":" {
         return Err("Bad seconds divider".to_owned());
@@ -72,16 +72,16 @@ fn duration_from_time_string(time_str: &str) -> Result<Duration, String> {
     let seconds_str = &time_str[3..5];
     let seconds = seconds_str
         .parse::<u64>()
-        .map_err(|e| format!("Bad seconds format ({}): {}", seconds_str, e))?;
+        .map_err(|e| format!("Bad seconds format ({seconds_str}): {e}"))?;
 
     let ms_divider_char = &time_str[5..6];
     if ms_divider_char != "." && ms_divider_char != ":" {
-        return Err(format!("Bad milliseconds divider: {}", ms_divider_char));
+        return Err(format!("Bad milliseconds divider: {ms_divider_char}"));
     }
     let centiseconds_str = &time_str[6..8];
     let centiseconds = centiseconds_str
         .parse::<u64>()
-        .map_err(|e| format!("Bad centiseconds format ({}): {}", centiseconds_str, e))?;
+        .map_err(|e| format!("Bad centiseconds format ({centiseconds_str}): {e}"))?;
 
     Ok(Duration::from_micros(
         ((((minutes * 60) + seconds) * 100) + centiseconds) * 10000,
@@ -105,11 +105,11 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
         match tag_first_part {
             "offset" => {
                 let offset_val_str = parts.next().ok_or_else(|| {
-                    format!("Wrong offset tag format (missing ':'): {}", tag_content)
+                    format!("Wrong offset tag format (missing ':'): {tag_content}")
                 })?;
                 let offset = offset_val_str
                     .parse::<i64>()
-                    .map_err(|e| format!("Bad offset format ({}): {}", offset_val_str, e))?;
+                    .map_err(|e| format!("Bad offset format ({offset_val_str}): {e}"))?;
                 Ok(Tag::Offset(offset))
             }
             _ => Ok(Tag::Unknown),
@@ -117,7 +117,7 @@ fn parse_tag(tag_content: &str) -> Result<Tag, String> {
     }
 }
 
-fn parse_lrc_line(line: String) -> Result<LrcLine, String> {
+fn parse_lrc_line(line: &str) -> Result<LrcLine, String> {
     trace!("Parsing line {}", line);
     match line.chars().next() {
         None => Ok(LrcLine::Empty),
@@ -170,17 +170,14 @@ pub fn parse_lrc_file<P: AsRef<Path>>(filepath: P) -> Result<LrcFile, String> {
     let mut timed_texts_lines = Vec::new();
     let mut offset_ms = 0i64;
     for line in text_lines {
-        match parse_lrc_line(line)? {
+        match parse_lrc_line(&line)? {
             LrcLine::TimedText(mut t) => {
                 if offset_ms != 0 {
                     for timing in &mut t.timings {
                         let prev_time_ms: i64 = timing.time.as_millis().try_into().unwrap();
                         timing.time = Duration::from_millis(
                             (prev_time_ms + offset_ms).try_into().map_err(|_| {
-                                format!(
-                                    "Cannot apply offset {} to value {}",
-                                    offset_ms, prev_time_ms
-                                )
+                                format!("Cannot apply offset {offset_ms} to value {prev_time_ms}")
                             })?,
                         );
                     }
@@ -230,7 +227,7 @@ impl Lyrics {
                     line_index,
                     line_char_from_index: timing.line_char_from_index,
                     line_char_to_index: timing.line_char_to_index,
-                })
+                });
             }
         }
         Lyrics { lines, timings }

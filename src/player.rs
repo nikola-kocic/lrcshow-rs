@@ -68,7 +68,7 @@ fn parse_player_metadata(metadata: &dyn RefArg) -> Result<Option<Metadata>, Stri
     let file_path = match Url::parse(file_path_uri) {
         Ok(file_path_url) => file_path_url
             .to_file_path()
-            .map_err(|_| format!("invalid format of url metadata: {}", file_path_url))?,
+            .map_err(|()| format!("invalid format of url metadata: {file_path_url}"))?,
         Err(_) => PathBuf::from(file_path_uri),
     };
 
@@ -83,10 +83,10 @@ pub fn query_player_state(p: &ConnectionProxy) -> Result<PlayerState, String> {
     let playback_status = query_player_playback_status(p)?;
     let position = query_player_position(p)?;
     let instant = Instant::now();
-    let metadata = if playback_status != PlaybackStatus::Stopped {
-        query_player_metadata(p)?
-    } else {
+    let metadata = if playback_status == PlaybackStatus::Stopped {
         None
+    } else {
+        query_player_metadata(p)?
     };
     Ok(PlayerState {
         playback_status,
@@ -138,7 +138,7 @@ fn query_all_player_buses(c: &LocalConnection) -> Result<Vec<String>, String> {
 
     Ok(names
         .filter(|name| name.starts_with(MPRIS2_PREFIX))
-        .map(|str_ref| str_ref.to_owned())
+        .map(std::borrow::ToOwned::to_owned)
         .collect())
 }
 
@@ -291,13 +291,10 @@ fn get_dbus_name_owned_changed_handler(
     }
 }
 
-fn query_player_owner_name<'a>(
-    c: &'a LocalConnection,
-    player: &'a str,
-) -> Result<Option<String>, String> {
+fn query_player_owner_name(c: &LocalConnection, player: &str) -> Result<Option<String>, String> {
     let all_player_buses = query_all_player_buses(c)?;
 
-    let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
+    let player_bus = format!("{MPRIS2_PREFIX}{player}");
     if !all_player_buses.contains(&player_bus) {
         info!(
             "Specified player not running. Found the following players: {}",
@@ -341,7 +338,7 @@ fn subscribe_to_player_start_stop(
     player: &str,
     sender: &Sender<PlayerLifetimeEvent>,
 ) -> Result<(), String> {
-    let player_bus = format!("{}{}", MPRIS2_PREFIX, player);
+    let player_bus = format!("{MPRIS2_PREFIX}{player}");
 
     let proxy_generic_dbus = c.with_proxy(
         "org.freedesktop.DBus",
@@ -366,10 +363,10 @@ impl PlayerNotifications {
         Self { sender }
     }
 
-    fn run_sync(&self, player: String) {
+    fn run_sync(&self, player: &str) {
         let (tx, rx) = channel::<PlayerLifetimeEvent>();
         let c = LocalConnection::new_session().unwrap();
-        subscribe_to_player_start_stop(&c, &player, &tx).unwrap();
+        subscribe_to_player_start_stop(&c, player, &tx).unwrap();
         tx.send(PlayerLifetimeEvent::PlayerStarted).unwrap();
         loop {
             loop {
@@ -378,7 +375,7 @@ impl PlayerNotifications {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
                     Ok(PlayerLifetimeEvent::PlayerStarted) => {
                         if let Some(player_owner_name) =
-                            query_player_owner_name(&c, &player).unwrap()
+                            query_player_owner_name(&c, player).unwrap()
                         {
                             let instant = Instant::now();
                             subscribe(&c, &player_owner_name, &self.sender).unwrap();
@@ -410,7 +407,7 @@ impl PlayerNotifications {
     pub fn run_async(self, player: &str) {
         let player_string = player.to_owned();
         thread::spawn(move || {
-            self.run_sync(player_string);
+            self.run_sync(&player_string);
         });
     }
 }

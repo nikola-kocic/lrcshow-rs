@@ -26,10 +26,9 @@ impl Server {
     pub fn get_current_lyrics_position(&self) -> (i32, i32, i32) {
         let v = self.current_timing.lock().unwrap();
         debug!("GetCurrentLyricsPosition called");
-        let reply = v
-            .as_ref()
-            .map(|x| (x.line_index, x.line_char_from_index, x.line_char_to_index))
-            .unwrap_or((-1, -1, -1));
+        let reply = v.as_ref().map_or((-1, -1, -1), |x| {
+            (x.line_index, x.line_char_from_index, x.line_char_to_index)
+        });
         reply
     }
 
