@@ -7,10 +7,9 @@ mod server;
 
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::Parser;
-use dbus::blocking::LocalConnection;
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -21,7 +20,7 @@ use crate::events::{
 use crate::formatters::format_duration;
 use crate::lrc::{Lyrics, LyricsTiming};
 use crate::lrc_file_manager::{get_lrc_filepath, LrcManager};
-use crate::player::{get_connection_proxy, PlayerNotifications, QueryPlayerProperties};
+use crate::player::PlayerNotifications;
 
 static REFRESH_EVERY: Duration = Duration::from_millis(16);
 
@@ -101,8 +100,6 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
     }
     let lrc_manager_join_handle = lrc_manager.run_async();
 
-    let c = LocalConnection::new_session().unwrap();
-    let mut player_query: Option<QueryPlayerProperties<'_, LocalConnection>> = None;
     let mut lrc_state: Option<LrcTimedTextState> = None;
     let mut player_state: Option<PlayerState> = None;
     let mut lyrics: Option<Lyrics> = None;
@@ -127,9 +124,10 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                             ps.position_snapshot = PositionSnapshot { position, instant };
                         }
                     }
-                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
-                        PlaybackStatus::Playing,
-                    )) => {
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange {
+                        status: PlaybackStatus::Playing,
+                        position: _,
+                    }) => {
                         // position was already queried on pause and seek
                         player_state = player_state.map(|p| PlayerState {
                             playback_status: PlaybackStatus::Playing,
@@ -140,9 +138,10 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                             metadata: p.metadata,
                         });
                     }
-                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
-                        PlaybackStatus::Stopped,
-                    )) => {
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange {
+                        status: PlaybackStatus::Stopped,
+                        position: _,
+                    }) => {
                         player_state = Some(PlayerState {
                             playback_status: PlaybackStatus::Stopped,
                             position_snapshot: PositionSnapshot {
@@ -152,14 +151,15 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                             metadata: None,
                         });
                     }
-                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange(
-                        PlaybackStatus::Paused,
-                    )) => {
-                        if let (Some(p), Some(q)) = (&mut player_state, &player_query) {
+                    Event::PlayerEvent(PlayerEvent::PlaybackStatusChange {
+                        status: PlaybackStatus::Paused,
+                        position,
+                    }) => {
+                        if let Some(p) = &mut player_state {
                             p.playback_status = PlaybackStatus::Paused;
                             p.position_snapshot = PositionSnapshot {
-                                position: q.query_player_position().unwrap(),
-                                instant: Instant::now(),
+                                position: position.unwrap(), // position is always defined when state is paused
+                                instant,
                             };
                         }
                     }
@@ -177,17 +177,9 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     Event::PlayerEvent(PlayerEvent::PlayerShutDown) => {
                         LrcManager::change_watched_path(None, &lrc_manager_sender);
                         player_state = None;
-                        player_query = None;
                     }
-                    Event::PlayerEvent(PlayerEvent::PlayerStarted {
-                        player_owner_name: n,
-                    }) => {
-                        let q = QueryPlayerProperties {
-                            proxy: get_connection_proxy(&c, n),
-                        };
-                        // TODO: This is often crashing on player restart
-                        player_state = Some(q.query_player_state().unwrap());
-                        player_query = Some(q);
+                    Event::PlayerEvent(PlayerEvent::PlayerStarted { state: s }) => {
+                        player_state = Some(s);
 
                         if lrc_filepath.is_none() {
                             LrcManager::change_watched_path(
@@ -207,7 +199,7 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     Event::LyricsEvent(LyricsEvent::LyricsChanged { lyrics: l, .. }) => {
                         lrc_state = None; // will be asigned after event processing
                         lyrics = l;
-                        server.on_lyrics_changed(lyrics.as_ref().map(|l| l.lines.clone()), &c);
+                        server.on_lyrics_changed(lyrics.as_ref().map(|l| l.lines.clone()));
                     }
                 }
 
@@ -223,7 +215,7 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     .map(|p| LrcTimedTextState::new(l, p.current_position()))
             });
             let timed_text = lrc_state.as_ref().and_then(|l| l.current);
-            server.on_active_lyrics_segment_changed(timed_text, &c);
+            server.on_active_lyrics_segment_changed(timed_text);
         } else if let Some(ref player_state) = player_state {
             if player_state.playback_status == PlaybackStatus::Playing {
                 let new_timed_text = lrc_state
@@ -231,7 +223,7 @@ fn run(player: String, lrc_filepath: &Option<PathBuf>) -> Option<()> {
                     .and_then(|l| l.on_position_advanced(player_state.current_position()));
                 // None also means that current lyrics segment should not change
                 if new_timed_text.is_some() {
-                    server.on_active_lyrics_segment_changed(new_timed_text, &c);
+                    server.on_active_lyrics_segment_changed(new_timed_text);
                 }
             }
         }

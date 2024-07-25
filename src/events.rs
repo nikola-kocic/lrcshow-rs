@@ -2,9 +2,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::lrc::Lyrics;
-use crate::player::BusName;
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq)]
 pub enum PlaybackStatus {
     Playing,
     Paused,
@@ -47,12 +46,22 @@ impl PlayerState {
 
 #[derive(Debug, PartialEq)]
 pub enum PlayerEvent {
-    PlayerStarted { player_owner_name: BusName },
+    PlayerStarted {
+        state: PlayerState,
+    },
     PlayerShutDown,
-    PlaybackStatusChange(PlaybackStatus),
-    Seeked { position: Duration },
+    PlaybackStatusChange {
+        status: PlaybackStatus,
+        position: Option<Duration>,
+    },
+    Seeked {
+        position: Duration,
+    },
     MetadataChange(Option<Metadata>),
-    Unknown { key: String, value: String },
+    Unknown {
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Debug)]
