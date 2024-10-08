@@ -1,13 +1,18 @@
-name: "Verifications"
+name: "CI workflow"
 
 on:
   push:
+    branches:
+      - master
+      - main
   pull_request:
 
 jobs:
-  verifications:
-    name: Code verifications
+  ci_workflow:
+    name: "CI workflow"
     runs-on: ubuntu-latest
+    env:
+      release_archive_name: "lrcshow-rs-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}-linux-bin-x86_64.tar.gz"
     steps:
       - uses: actions/checkout@v4
       - name: Install required tools
@@ -21,3 +26,16 @@ jobs:
       - name: Compile and run tests
         run: cargo test --all-features
       - run: cargo clippy
+      - run: cargo build --release
+      - run: tar --directory="target/release" -czf "${{ env.release_archive_name }}" "lrcshow-rs"
+      - name: "Upload Artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bin-x86_64-release
+          path: "${{ env.release_archive_name }}"
+          retention-days: 5
+      - name: "Create Release"
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: "${{ env.release_archive_name }}"
