@@ -12,4 +12,4 @@ env_logger = {version = "0.11.5", default-features = false, features = ["auto-co
 log = "0.4.8"
 notify = "7.0.0"
 test-log = "0.2.16"
-url = "2.1.1"
+url = "2.5.3"
