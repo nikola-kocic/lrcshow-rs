@@ -39,7 +39,7 @@ struct QueryPlayerProperties<'a, C: BlockingSender> {
     proxy: &'a Proxy<'a, &'a C>,
 }
 
-impl<'a, C: BlockingSender> QueryPlayerProperties<'a, C> {
+impl<C: BlockingSender> QueryPlayerProperties<'_, C> {
     fn query_player_property(&self, name: &str) -> Result<Box<dyn RefArg>, String> {
         self.proxy
             .get("org.mpris.MediaPlayer2.Player", name)
@@ -269,7 +269,7 @@ struct PlayerBusOwnerNameFinder<'a> {
     player_bus: &'a String,
 }
 
-impl<'a> PlayerBusOwnerNameFinder<'a> {
+impl PlayerBusOwnerNameFinder<'_> {
     fn query_all_player_buses(&self) -> Result<Vec<String>, String> {
         let list_names = Message::new_method_call(
             "org.freedesktop.DBus",
