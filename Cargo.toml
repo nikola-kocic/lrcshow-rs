@@ -10,6 +10,6 @@ dbus = {version = "0.9.7", features = ["stdfd"]}
 dbus-crossroads = "0.5.2"
 env_logger = {version = "0.11.6", default-features = false, features = ["auto-color", "humantime"]}
 log = "0.4.8"
-notify = "7.0.0"
+notify = "8.0.0"
 test-log = "0.2.16"
 url = "2.5.4"
